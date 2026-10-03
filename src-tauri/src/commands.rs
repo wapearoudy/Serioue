@@ -551,7 +551,15 @@ pub async fn data_dir(app: tauri::AppHandle) -> AppResult<String> {
 }
 
 /// Resolve where the store lives so `run()` can open it.
+///
+/// Honours `SERIOUS_DATA_DIR` so the app can be pointed at a scratch
+/// directory on machines where the user profile is not writable.
 pub fn store_dir(app: &tauri::AppHandle) -> AppResult<PathBuf> {
+    if let Ok(custom) = std::env::var("SERIOUS_DATA_DIR") {
+        if !custom.trim().is_empty() {
+            return Ok(PathBuf::from(custom));
+        }
+    }
     app.path()
         .app_data_dir()
         .map_err(|e| AppError::other(e.to_string()))

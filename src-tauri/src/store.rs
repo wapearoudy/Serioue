@@ -113,7 +113,14 @@ pub struct Store {
 impl Store {
     pub fn new(dir: PathBuf) -> AppResult<Self> {
         std::fs::create_dir_all(&dir)?;
-        std::fs::create_dir_all(dir.join("cache"))?;
+
+        // The cache directory is optional: a failed attempt here (antivirus
+        // holding a handle, a locked-down profile) must not stop the app from
+        // starting. It is re-created lazily by the cache writer.
+        if let Err(e) = std::fs::create_dir_all(dir.join("cache")) {
+            log::warn!("cache directory unavailable, continuing without it: {e}");
+        }
+
         let store = Store { dir, inner: Mutex::new(Inner::default()) };
         store.load()?;
         Ok(store)
