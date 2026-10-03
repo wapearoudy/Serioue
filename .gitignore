@@ -17,3 +17,6 @@ serious-updater.key
 .idea/
 .DS_Store
 Thumbs.db
+
+# Native smoke-test artifacts
+test-results/

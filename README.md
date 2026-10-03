@@ -119,6 +119,10 @@ pnpm tauri dev        # 开发模式
 pnpm tauri build      # 打包当前平台的安装包
 ```
 
+> **release 构建必须走 `pnpm tauri build`，或 `cargo build --release --features custom-protocol`。**
+> 直接 `cargo build --release` 不会启用 Tauri 的 `custom-protocol`，产物会回退到
+> `devUrl` 并显示空白窗口。
+
 ### 单独运行各部分
 
 ```bash
@@ -127,6 +131,29 @@ cd src-tauri
 cargo test --lib      # 62 个单元测试，不联网
 cargo clippy --all-targets
 ```
+
+### 原生窗口冒烟测试
+
+用 Playwright 通过 WebView2 的 CDP 端口驱动**真实窗口**，截图并断言界面与 IPC：
+
+```bash
+pnpm build && cargo build --release --features custom-protocol   # src-tauri/
+pnpm test:native           # 渲染检查 + 后端命令
+SERIOUS_SMOKE_NETWORK=1 pnpm test:native   # 额外导入真实合集并浏览
+```
+
+产物写在 `test-results/`（已 gitignore）。
+
+> **低完整性会话的注意事项**
+>
+> 如果构建产物位于低完整性（Low integrity）级别，WebView2 无法写入默认的用户数据目录，
+> 窗口创建会失败并报 `拒绝访问 (os error 5)`。两种处理方式：
+>
+> ```powershell
+> icacls .\src-tauri\target\release\serious.exe /setintegritylevel Medium
+> ```
+>
+> 冒烟测试脚本已经通过 `WEBVIEW2_USER_DATA_FOLDER` 指向临时目录来规避这一点。
 
 ### 联网集成测试
 

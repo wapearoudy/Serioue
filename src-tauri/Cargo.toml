@@ -10,6 +10,12 @@ rust-version = "1.82"
 name = "serious_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Tauri serves the bundled frontend through a custom protocol in release
+# builds. Without this feature a release binary falls back to `devUrl` and
+# renders a blank window, because plain `cargo build --release` never passes it.
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

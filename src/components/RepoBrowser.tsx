@@ -122,7 +122,7 @@ export function RepoBrowser({ onClose, onImported }: Props) {
           )}
         </div>
 
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14 }}>
+        <div className="modal-actions">
           <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
             上一页
           </button>
