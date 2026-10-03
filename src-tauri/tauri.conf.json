@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Serious",
+  "version": "0.1.0",
+  "identifier": "fun.yck2026.serious",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Serious",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Utility",
+    "shortDescription": "Legado source client",
+    "longDescription": "Turn shared Legado sources into working browsing features: category tabs, article lists, readers, video players and image galleries."
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUwNjA0MDUyMjMxNTlFNTYKUldSV25oVWpVa0JnNE90S29TMTZNOFd6UklRTzNUa0xWakRkN285MEF4Q3pSNzFYeGNYRVlXaXEK",
+      "endpoints": [
+        "https://github.com/wapearoudy/Serioue/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

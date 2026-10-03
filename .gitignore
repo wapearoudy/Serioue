@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+src-tauri/target/
+
+# Tauri signing — the private key must never be committed.
+# CI uses TAURI_SIGNING_PRIVATE_KEY as a repository secret instead.
+*.key
+*.key.pub.bak
+serious-updater.key
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
