@@ -167,7 +167,13 @@ try {
   }
 
   // Import a real collection and browse it, if the network allows.
-  if (process.env.SERIOUS_SMOKE_NETWORK === "1") {
+  //
+  // The fixture-backed sections below need no third-party network, so they run
+  // whenever the fixture server is up — otherwise a flaky import would take
+  // down tests that never touch the internet.
+  const wantNetwork = process.env.SERIOUS_SMOKE_NETWORK === "1";
+  if (wantNetwork || fixtureBase) {
+    if (wantNetwork) {
     console.log("  (network mode: importing a real collection)");
     await page.getByRole("button", { name: "导入合集" }).first().click();
     await page.waitForSelector(".modal", { timeout: 10000 });
@@ -484,8 +490,36 @@ try {
       );
       console.log("  returning to the two-category source starts on its first category");
     }
+    }
 
-    // -- Music and video in the packaged app ---------------------------------
+    // -- Can a rendered DOM be read back? -------------------------------------
+  // The audit says almost every reachable source declares `enableJs`. Whether
+  // that is worth acting on depends on one fact: can Tauri hand back HTML that
+  // scripts have already built? The fixture page builds its list in JavaScript,
+  // so it is a fair test.
+  if (fixtureBase) {
+    console.log("  (render probe)");
+    const rendered = await page.evaluate(
+      async ([url]) => window.__TAURI_INTERNALS__.invoke("render_probe", { url }),
+      [`${fixtureBase}/rendered.html`],
+    );
+    console.log(
+      `  render_probe: loaded=${rendered.loaded} html=${rendered.html_len} ` +
+        `links=${rendered.link_count} title="${rendered.title}"` +
+        (rendered.error ? ` error=${rendered.error}` : ""),
+    );
+    // A page whose list exists only after JS runs is the whole question. If
+    // the returned HTML is large and link-bearing, rendering works and the
+    // remaining 18 failures are addressable.
+    assert.ok(rendered.loaded, `render probe failed: ${rendered.error}`);
+    assert.ok(
+      rendered.html_len > 500,
+      `only ${rendered.html_len} characters came back — the DOM is not being returned`,
+    );
+    console.log("  a script-built document came back through the webview");
+  }
+
+  // -- Music and video in the packaged app ---------------------------------
     // These paths had only ever been covered by browser tests; two real bugs
     // last round hid behind that gap.
     if (fixtureBase) {
@@ -598,6 +632,9 @@ try {
       console.log("  screenshots: test-results/native-music.png, native-video.png");
     }
 
+    // Verification is driven from the imported collection, so it needs the
+    // network leg.
+    if (wantNetwork) {
     // -- Source verification -------------------------------------------------
     await page.getByRole("button", { name: "校验", exact: true }).click();
     await page.waitForSelector(".verify-list, .empty", { timeout: 10000 });
@@ -652,6 +689,7 @@ try {
     assert.equal(one.stages.length, 5, "check_source did not report every stage");
     assert.ok(one.duration_ms >= 0, "check_source did not report a duration");
     console.log("  screenshot: test-results/native-verify-detail.png");
+    }
   }
 } catch (error) {
   failed = true;

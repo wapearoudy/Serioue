@@ -3,6 +3,7 @@ pub mod engine;
 pub mod error;
 pub mod model;
 pub mod repo;
+pub mod render_probe;
 pub mod store;
 pub mod update;
 pub mod util;
@@ -52,6 +53,7 @@ pub fn run() {
             commands::cancel_check,
             commands::list_history,
             commands::clear_history,
+            commands::render_probe,
             commands::continue_reading,
             commands::get_progress,
             commands::save_progress,

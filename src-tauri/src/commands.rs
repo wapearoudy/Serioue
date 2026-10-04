@@ -523,6 +523,33 @@ pub async fn cancel_check(state: State<'_, AppState>) -> AppResult<()> {
 // Library: history, collections, settings, cache
 // ---------------------------------------------------------------------------
 
+/// Measure whether a rendered DOM can be read back from an offscreen webview.
+///
+/// This exists to settle a design question with a number rather than an
+/// opinion: roughly 50 of 52 reachable sources declare `enableJs`, so the only
+/// remaining lever on source coverage is rendering the page. It is not part of
+/// the product surface and only the native smoke test calls it.
+#[tauri::command]
+pub async fn render_probe(
+    app: tauri::AppHandle,
+    url: String,
+) -> crate::render_probe::RenderProbe {
+    // Window creation is synchronous and main-thread-bound, so it moves off
+    // the async runtime.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::render_probe::probe_blocking(&app, &url));
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(40))
+        .unwrap_or_else(|e| crate::render_probe::RenderProbe {
+            loaded: false,
+            html_len: 0,
+            title: String::new(),
+            link_count: 0,
+            error: Some(format!("probe timed out: {e}")),
+        })
+}
+
 #[tauri::command]
 pub async fn list_history(state: State<'_, AppState>, limit: Option<usize>) -> AppResult<Vec<HistoryEntry>> {
     let store = state.store.clone();

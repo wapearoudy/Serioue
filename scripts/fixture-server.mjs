@@ -88,6 +88,30 @@ function articlePage() {
 <body><h1>文章测试页</h1>${paras}</body></html>`;
 }
 
+/**
+ * A page whose content only exists after JavaScript runs.
+ *
+ * Nothing here is in the served HTML: the list is built by a script on load.
+ * If a renderer can read this page's DOM back, then reading a real
+ * script-rendered site back is the same problem.
+ */
+function renderedPage() {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>脚本渲染页</title></head>
+<body><h1>脚本渲染页</h1><ul id="list"></ul>
+<script>
+  var list = document.getElementById('list');
+  for (var i = 1; i <= 6; i++) {
+    var li = document.createElement('li');
+    var a = document.createElement('a');
+    a.href = '/rendered.html?p=' + i;
+    a.textContent = '脚本生成的第 ' + i + ' 条';
+    li.appendChild(a);
+    list.appendChild(li);
+  }
+</script>
+</body></html>`;
+}
+
 const requested = Number(process.argv[2] || 0);
 
 const server = createServer(async (req, res) => {
@@ -115,6 +139,7 @@ const server = createServer(async (req, res) => {
       "/music.html": musicPage(host),
       "/video.html": videoPage(host),
       "/article.html": articlePage(),
+      "/rendered.html": renderedPage(),
     }[path_];
 
   if (html) {
