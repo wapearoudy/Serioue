@@ -111,6 +111,48 @@ try {
   );
   await page.screenshot({ path: path.join(outDir, "video-error.png") });
 
+  // -- subtitles ------------------------------------------------------------
+  await page.selectOption("select", { label: "HLS 多码率" });
+  await page.waitForSelector(".player-extras", { timeout: 20000 });
+
+  const tracks = await page.evaluate(() => {
+    const v = document.querySelector(".player-wrap video");
+    if (!v) return null;
+    return {
+      declared: v.querySelectorAll("track[kind=subtitles]").length,
+      // `textTracks` is the API the browser actually uses once tracks load.
+      loaded: v.textTracks.length,
+      cues: v.textTracks[0]?.cues?.length ?? 0,
+      mode: v.textTracks[0]?.mode ?? null,
+    };
+  });
+  assert.ok(tracks, "no video element");
+  assert.ok(tracks.declared >= 1, `no <track> rendered (${tracks.declared})`);
+  assert.ok(tracks.loaded >= 1, `the browser did not pick up the track (${tracks.loaded})`);
+  assert.ok(tracks.cues > 0, `the subtitle file parsed to zero cues (${tracks.cues})`);
+  console.log(
+    `  subtitles: ${tracks.declared} <track>, ${tracks.loaded} text track, ` +
+      `${tracks.cues} cues, mode=${tracks.mode}`,
+  );
+
+  // -- next-episode prompt --------------------------------------------------
+  // Jump to the very end so `ended` fires, then check the countdown appears.
+  await page.evaluate(() => {
+    const v = document.querySelector(".player-wrap video");
+    v.currentTime = Math.max(0, v.duration - 0.15);
+    return v.play();
+  });
+  await page.waitForSelector(".player-resume", { timeout: 20000 });
+  const prompt = (await page.locator(".player-resume-text").innerText()).trim();
+  assert.ok(/秒后播放：第 2 集/.test(prompt), `unexpected prompt: ${prompt}`);
+  console.log(`  next-episode prompt: ${prompt}`);
+
+  // Cancelling must stop it.
+  await page.locator(".player-resume button", { hasText: "取消" }).click();
+  await page.waitForSelector(".player-resume", { state: "detached", timeout: 5000 });
+  console.log("  cancelling the prompt dismissed it");
+  await page.screenshot({ path: path.join(outDir, "video-subtitles.png") });
+
   // -- resume across a reload -----------------------------------------------
   // Reload back to the working stream first.
   await page.selectOption("select", { label: "HLS 多码率" });

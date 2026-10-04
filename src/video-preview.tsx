@@ -10,6 +10,7 @@ import "./dev-tauri-stub";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { VideoPlayer, isPlayable } from "./components/VideoPlayer";
+import type { Subtitle } from "./components/media";
 import "./styles.css";
 
 const STREAMS = [
@@ -20,7 +21,9 @@ const STREAMS = [
 
 function Preview() {
   const [at, setAt] = useState(0);
+  const [nextOn, setNextOn] = useState(true);
   const stream = STREAMS[at];
+  const subs: Subtitle[] = [{ src: "/demo/hls/subs.vtt", label: "中文", lang: "zh", isDefault: true }];
 
   return (
     <div className="main" style={{ maxWidth: 860, margin: "30px auto", padding: "0 16px" }}>
@@ -30,6 +33,9 @@ function Preview() {
           <span>{stream.label}</span>
         </div>
         <span className="spacer" />
+        <label style={{ fontSize: 12 }}>
+          <input type="checkbox" checked={nextOn} onChange={(e) => setNextOn(e.target.checked)} /> 连播
+        </label>
         <select value={at} onChange={(e) => setAt(Number(e.target.value))}>
           {STREAMS.map((s, i) => (
             <option key={s.src} value={i}>
@@ -39,7 +45,14 @@ function Preview() {
         </select>
       </div>
       <div className="main-body">
-        <VideoPlayer src={stream.src} title={stream.label} resumeKey="demo:video" />
+        <VideoPlayer
+          src={stream.src}
+          title={stream.label}
+          resumeKey="demo:video"
+          subtitles={subs}
+          nextTitle={nextOn ? "第 2 集 · 示例" : undefined}
+          onNext={nextOn ? () => console.log("[preview] autoplay next") : undefined}
+        />
         <p style={{ color: "var(--text-faint)", fontSize: 12 }}>
           isPlayable(/demo/hls/master.m3u8) = {String(isPlayable("/demo/hls/master.m3u8"))}
         </p>

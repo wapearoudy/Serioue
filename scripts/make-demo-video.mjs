@@ -73,3 +73,18 @@ const master = [
 
 await (await import("node:fs/promises")).writeFile(path.join(outDir, "master.m3u8"), master);
 console.log("wrote public/demo/hls/master.m3u8 with", LADDERS.length, "renditions");
+
+// A WebVTT file so the player's subtitle path can be exercised for real.
+const cues = [
+  ["00:00:00.000", "00:00:03.000", "Serious 测试字幕"],
+  ["00:00:03.000", "00:00:06.000", "第二行字幕"],
+  ["00:00:06.000", "00:00:09.000", "第三行字幕"],
+  ["00:00:09.000", "00:00:12.000", "最后一行字幕"],
+];
+const vtt = [
+  "WEBVTT",
+  "",
+  ...cues.flatMap(([start, end, text]) => [`${start} --> ${end}`, text, ""]),
+].join("\n");
+await (await import("node:fs/promises")).writeFile(path.join(outDir, "subs.vtt"), vtt);
+console.log("wrote public/demo/hls/subs.vtt with", cues.length, "cues");

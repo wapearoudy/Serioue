@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type ArticleItem } from "../api";
-import { Gallery, extractImages, sanitize } from "./media";
+import { Gallery, extractImages, extractSubtitles, sanitize } from "./media";
 import { isPlayable } from "./VideoPlayer";
 import { VideoPlayer } from "./VideoPlayer";
 import { MusicPlayer, extractAudio, isAudioUrl, type Track } from "./MusicPlayer";
@@ -68,6 +68,7 @@ export function Reader({
     const audio = article.audio ?? extractAudio(article.html, article.final_url);
     const video = article.media.find((m) => isPlayable(m) && !isAudioUrl(m)) ?? null;
     const images = extractImages(article.html, article.final_url);
+    const subtitles = extractSubtitles(article.html, article.final_url);
     const text = article.text.trim();
 
     const hasRich = /<(video|img|p|h[1-6]|table|ul|ol|pre)\b/i.test(rich);
@@ -101,7 +102,7 @@ export function Reader({
       }
     }
 
-    return { rich, video, images, text, rendered, tracks };
+    return { rich, video, images, text, rendered, tracks, subtitles };
   }, [article, mode, itemKind]);
 
   // How far down the readable area the user is.
@@ -290,6 +291,9 @@ export function Reader({
                 poster={view.images[0]}
                 title={article!.title}
                 resumeKey={articleUrl}
+                subtitles={view.subtitles}
+                nextTitle={nextChapter?.title}
+                onNext={nextChapter && onOpenSibling ? () => onOpenSibling(nextChapter) : undefined}
               />
             )}
 

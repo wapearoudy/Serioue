@@ -119,6 +119,8 @@ pnpm test:reader    # Playwright 驱动真实浏览器
 - 倍速 0.75× – 2×
 - 快捷键：`空格` / `k` 播放暂停、`←/→` ±10 秒、`f` 全屏
 - **续播**：记住看到的位置，重开时提示「上次看到 6:24」，可选继续播放或从头开始
+- **字幕**：自动读取页面里的 `<track kind="subtitles">` 并挂到播放器上
+- **连播**：一个视频源往往就是剧集列表，放完后提示「6 秒后播放：第 2 集」，可立即播放或取消
 - 失败分级处理：网络错误自动重试、解码错误自动恢复、其余给出明确原因 —— 不再一律甩锅给 VLC
 
 播放控制条用浏览器原生的（无障碍、可访问性更好），画质/倍速/全屏放在覆盖层。
@@ -143,6 +145,9 @@ restored to 画质 自动
 speed set the element to 1.5x
 HLS playback advanced to t=1.68s (readyState 4, duration 12.1s)
 dead stream reports: 网络中断，正在重试…
+subtitles: 1 <track>, 1 text track, 4 cues, mode=showing
+next-episode prompt: 6 秒后播放：第 2 集 · 示例
+cancelling the prompt dismissed it
 position stored as 50% of the runtime
 after reload the player offers: 上次看到 0:06
 "继续播放" jumped from 0s to 6s

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import { api } from "../api";
+import type { Subtitle } from "./media";
 
 /** Formats the `<video>` element can usually play directly. */
 const VIDEO_EXT = /\.(mp4|webm|ogg|ogv|mov|mkv)(\?|#|$)/i;
@@ -59,7 +60,56 @@ type Props = {
   title?: string;
   /** Key the playback position is remembered against; omit to disable. */
   resumeKey?: string;
+  /** Caption tracks declared by the page. */
+  subtitles?: Subtitle[];
+  /** Title of the next entry in the list, used for the autoplay prompt. */
+  nextTitle?: string;
+  /** Called when the viewer asks to move on; omit to disable autoplay. */
+  onNext?: () => void;
 };
+
+/** Seconds the viewer can take to cancel before the next entry starts. */
+const AUTOPLAY_WAIT = 6;
+
+/**
+ * Offer to continue into the next entry once a video finishes.
+ *
+ * A source's listing is usually the episode list, so this is the difference
+ * between watching a season one clip at a time and binging it. It prompts
+ * rather than jumping, because silently swapping content is hostile.
+ */
+function useAutoplayPrompt(
+  enabled: boolean,
+  source: string,
+  onNext: (() => void) | undefined,
+): number | null {
+  const [left, setLeft] = useState<number | null>(null);
+  const nextRef = useRef(onNext);
+  nextRef.current = onNext;
+
+  useEffect(() => {
+    if (!enabled || !nextRef.current) {
+      setLeft(null);
+      return;
+    }
+    setLeft(AUTOPLAY_WAIT);
+    const tick = setInterval(() => {
+      setLeft((n) => {
+        if (n === null) return null;
+        if (n <= 1) {
+          clearInterval(tick);
+          nextRef.current?.();
+          return null;
+        }
+        return n - 1;
+      });
+    }, 1000);
+    return () => clearInterval(tick);
+    // `source` re-arms the prompt when a different entry is opened.
+  }, [enabled, source]);
+
+  return left;
+}
 
 /**
  * Video player with HLS support.
@@ -73,7 +123,15 @@ type Props = {
  * are accessible and behave correctly; the extras a streaming site needs —
  * quality, speed, fullscreen — sit in an overlay.
  */
-export function VideoPlayer({ src, poster, title, resumeKey }: Props) {
+export function VideoPlayer({
+  src,
+  poster,
+  title,
+  resumeKey,
+  subtitles = [],
+  nextTitle,
+  onNext,
+}: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const hls = useRef<Hls | null>(null);
@@ -86,6 +144,8 @@ export function VideoPlayer({ src, poster, title, resumeKey }: Props) {
   const [panel, setPanel] = useState<"quality" | "speed" | null>(null);
   /** Seconds the viewer can jump back to, or null when there is nothing to resume. */
   const [resumeAt, setResumeAt] = useState<number | null>(null);
+  /** Set when a video finishes and there is somewhere to go next. */
+  const [finished, setFinished] = useState(false);
 
   const isHls = HLS_EXT.test(src);
   /** True when hls.js will drive this element through Media Source. */
@@ -148,7 +208,10 @@ export function VideoPlayer({ src, poster, title, resumeKey }: Props) {
     setLevel(-1);
     setPanel(null);
     setResumeAt(null);
+    setFinished(false);
   }, [src]);
+
+  const countdown = useAutoplayPrompt(finished, src, onNext);
 
   /** Write the position back, throttled so scrubbing does not hammer the disk. */
   const save = useCallback(
@@ -166,6 +229,19 @@ export function VideoPlayer({ src, poster, title, resumeKey }: Props) {
     },
     [resumeKey],
   );
+
+  // When a video ends, offer the next entry if there is one; otherwise just
+  // make sure the position is stored.
+  useEffect(() => {
+    const el = video.current;
+    if (!el) return;
+    const onEnded = () => {
+      if (onNext && nextTitle) setFinished(true);
+      else save(true);
+    };
+    el.addEventListener("ended", onEnded);
+    return () => el.removeEventListener("ended", onEnded);
+  }, [onNext, nextTitle, save]);
 
   // Save on the way out, including when the component unmounts mid-playback.
   useEffect(() => {
@@ -231,6 +307,7 @@ export function VideoPlayer({ src, poster, title, resumeKey }: Props) {
       if (resumeKey) api.saveProgress(resumeKey, 0).catch(() => {});
     }
     setResumeAt(null);
+    setFinished(false);
   }, [resumeKey]);
 
   const changeLevel = useCallback((index: number) => {
@@ -294,11 +371,44 @@ export function VideoPlayer({ src, poster, title, resumeKey }: Props) {
         playsInline
         onLoadedMetadata={onLoadedMetadata}
         onTimeUpdate={() => save(false)}
+        onEnded={() => {
+          if (!(onNext && nextTitle)) setFinished(false);
+        }}
         onError={() => {
           // hls.js reports its own errors; this only fires for direct files.
           if (!useHls) setErr("视频无法播放：源可能已失效，或该格式不被内置播放器支持。");
         }}
-      />
+      >
+        {subtitles.map((t) => (
+          <track
+            key={t.src}
+            kind="subtitles"
+            src={t.src}
+            srcLang={t.lang || undefined}
+            label={t.label}
+            default={t.isDefault}
+          />
+        ))}
+      </video>
+
+      {countdown !== null && (
+        <div className="player-resume">
+          <span className="player-resume-text">
+            {countdown} 秒后播放：{nextTitle}
+          </span>
+          <button className="primary" onClick={() => onNext?.()}>
+            立即播放
+          </button>
+          <button
+            onClick={() => {
+              setFinished(false);
+              setPanel(null);
+            }}
+          >
+            取消
+          </button>
+        </div>
+      )}
 
       {resumeAt !== null && (
         <div className="player-resume">

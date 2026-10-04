@@ -2,6 +2,44 @@ import { useEffect, useMemo, useState } from "react";
 
 export { isPlayable, VideoPlayer } from "./VideoPlayer";
 
+/** One subtitle track found on a page. */
+export type Subtitle = {
+  src: string;
+  label: string;
+  lang: string;
+  /** True when the source declares itself as the default track. */
+  isDefault: boolean;
+};
+
+/**
+ * Pull `<track kind="subtitles">` out of an article body.
+ *
+ * Video sites ship captions this way far more often than as a bare `.srt`
+ * link, and a `<track>` the player never renders is a caption nobody sees.
+ */
+export function extractSubtitles(html: string, base: string): Subtitle[] {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const out: Subtitle[] = [];
+  const seen = new Set<string>();
+  doc.querySelectorAll("track").forEach((el) => {
+    const kind = (el.getAttribute("kind") || "").toLowerCase();
+    const raw = el.getAttribute("src");
+    if (!raw || (kind && kind !== "subtitles" && kind !== "captions")) return;
+    let src: string;
+    try {
+      src = new URL(raw, base).toString();
+    } catch {
+      src = raw;
+    }
+    if (seen.has(src)) return;
+    seen.add(src);
+    const lang = el.getAttribute("srclang") || el.getAttribute("lang") || "";
+    const label = el.getAttribute("label") || lang || "字幕";
+    out.push({ src, label, lang, isDefault: el.hasAttribute("default") });
+  });
+  return out;
+}
+
 export function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
