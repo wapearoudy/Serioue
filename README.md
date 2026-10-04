@@ -206,7 +206,16 @@ pnpm test:music     # Playwright 跑真实播放行为
    | Secret | 值 |
    | --- | --- |
    | `TAURI_SIGNING_PRIVATE_KEY` | `src-tauri/serious-updater.key` 的**全部内容** |
-   | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | 生成密钥时设的密码（本项目为空，留空即可） |
+   | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | **不要创建这个 secret** |
+
+   私钥是加过密的，解密口令为空时最省事的做法是**根本不建口令 secret** —— 变量不存在就是空串。
+   如果建了却填了别的内容（GitHub 不接受空值），CI 会解密失败，三个平台一起失败。
+
+   粘贴私钥时别用记事本手动打开复制，用命令行更稳妥：
+
+   ```powershell
+   Get-Content -Raw src-tauri\serious-updater.key | Set-Clipboard
+   ```
 
    > ⚠️ **私钥绝对不要提交到 Git。** `.gitignore` 已经排除了 `*.key`，但请确认没有手动添加过。
    > 私钥一旦丢失，就再也无法为后续版本签名，更新会永久失效。
@@ -372,6 +381,12 @@ tests/             联网集成测试（默认跳过）
 
 抽样中 **39/60 个源声明了 `enableJs`**。真正的瓶颈不是选择器写错，而是这些站点用脚本生成内容，
 纯服务端解析原理上就拿不到 —— 这是架构限制，不是规则 bug。校验报告会明确区分这两者。
+
+### `ruleArticles: "body"` 的陷阱
+
+旧格式合集里,**只要源没有 `articleUrl`,就会被填上 `ruleArticles: "body"`** —— 这是 Legado 的
+「整页源」约定。但如果页面其实是一堆链接(导航页、发布页、书签站),这会把 100 条链接压成
+**一条**「文章」,正文还是整页 HTML,连 `<script>` 都在里面。
 
 ### 规则引擎支持的 Legado 语法
 

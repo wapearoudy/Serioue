@@ -36,6 +36,13 @@ export function ArticleList({
   const category = categories[catIndex];
 
   // Load the first page whenever the source or category changes.
+  //
+  // `categoryUrl` is in the dependencies on purpose. The parent fetches the
+  // category list asynchronously, so on a source switch this effect first runs
+  // with the *previous* source's categories. Without it in the deps the stale
+  // URL is fetched once and never retried, leaving the user staring at the
+  // other source's listing until they click a category tab.
+  const categoryUrl = category?.url;
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -44,7 +51,7 @@ export function ArticleList({
     setNext(null);
 
     api
-      .loadPage({ id: sourceId, url: category?.url, page: 1 })
+      .loadPage({ id: sourceId, url: categoryUrl, page: 1 })
       .then((res) => {
         if (cancelled) return;
         setItems(res.items);
@@ -61,7 +68,7 @@ export function ArticleList({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceId, catIndex]);
+  }, [sourceId, catIndex, categoryUrl]);
 
   // Infinite scroll.
   useEffect(() => {

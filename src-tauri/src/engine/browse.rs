@@ -241,6 +241,21 @@ pub fn parse_list(src: &Source, body: &str, base_url: &str) -> (Vec<ArticleItem>
         }
     }
 
+    // Legacy collections fill in `ruleArticles: "body"` for any source without
+    // an `articleUrl`. That is the single-page convention, but applied to a
+    // plain bookmark page it turns a list of 100 links into one "article" whose
+    // body is the entire page including its scripts. When the page really is a
+    // list, prefer the list.
+    let body_only = src.rule_articles.trim().eq_ignore_ascii_case("body")
+        && src.rule_title.trim().is_empty()
+        && src.rule_link.trim().is_empty();
+    if body_only && json.is_none() {
+        let links = extract_links(&doc, base_url);
+        if links.len() >= 3 {
+            return (links, next(&doc, None));
+        }
+    }
+
     // Pick the list rule: the source's own, an inferred HTML pattern, or the
     // first array of objects when the body is JSON.
     let rule = if !src.rule_articles.trim().is_empty() {
@@ -906,6 +921,39 @@ mod tests {
         "#;
         let audio = audio_from(body);
         assert_eq!(audio, vec!["https://cdn.x.com/a.mp3"]);
+    }
+
+    #[test]
+    fn a_body_rule_source_with_many_links_is_still_a_list() {
+        // Legacy collections set `ruleArticles: "body"` whenever `articleUrl`
+        // is absent. Applied to a bookmark page that produced one "article"
+        // containing the whole page, scripts included.
+        let src = Source {
+            source_url: "https://example.com/".into(),
+            rule_articles: "body".into(),
+            ..Default::default()
+        };
+        let body: String = (1..=8)
+            .map(|i| format!("<li><a href=\"/page/{i}\">条目 {i}</a></li>"))
+            .collect::<Vec<_>>()
+            .join("");
+        let (items, _) = parse_list(&src, &format!("<html><body>{body}</body></html>"), "https://example.com/");
+        assert_eq!(items.len(), 8, "{}", items.len());
+        assert_eq!(items[0].title, "条目 1");
+        assert_eq!(items[0].link, "https://example.com/page/1");
+    }
+
+    #[test]
+    fn a_body_rule_source_with_no_links_stays_single_page() {
+        // A genuine single-page source must keep reading as one article.
+        let src = Source {
+            source_url: "https://example.com/".into(),
+            rule_articles: "body".into(),
+            ..Default::default()
+        };
+        let body = "<html><body><article>一段正文，没有链接。</article></body></html>";
+        let (items, _) = parse_list(&src, body, "https://example.com/");
+        assert_eq!(items.len(), 1, "a lone article is not a link list");
     }
 
     #[test]

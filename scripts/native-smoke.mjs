@@ -270,11 +270,40 @@ try {
 
       // Then the UI leg, which depends on what the listing produced.
       await fixture.first().click();
-      await page.waitForSelector(".grid, .empty", { timeout: 45000 });
+      // The header swaps immediately but the list is still the previous
+      // source's until the new page lands, so wait on a real condition.
+      await page.waitForFunction(
+        () => document.querySelectorAll(".grid .card").length > 50,
+        null,
+        { timeout: 45000 },
+      );
       const cards = await page.locator(".card").count();
-      console.log(`  fixture source listed ${cards} item(s)`);
+      const shown = (await page.locator(".main-title").first().innerText()).replace(/\s+/g, " ");
+      const viaCommand = await page.evaluate(
+        async ([id]) =>
+          window.__TAURI_INTERNALS__.invoke("load_page", {
+            args: { id, url: null, page: 1, next: null },
+          }),
+        [fixtureId],
+      );
+      console.log(
+        `  header reads "${shown}"; load_page returned ${viaCommand.items.length} item(s), ` +
+          `the grid rendered ${cards}`,
+      );
+      if (viaCommand.items.length > 0 && viaCommand.items.length < 5) {
+        console.log(`  the item(s): ${JSON.stringify(viaCommand.items[0]).slice(0, 200)}`);
+      }
+      assert.ok(
+        shown.includes("冒烟测试源"),
+        `clicking the fixture did not select it (header shows "${shown}")`,
+      );
 
       if (cards > 0) {
+        // A bare-URL listing is long, so a table of contents must be offered.
+        assert.ok(
+          (await page.locator(".main-head button", { hasText: "目录" }).count()) === 0,
+          "no contents button before an article is open",
+        );
         await page.locator(".card").first().click();
         await page.waitForSelector(".reader, .banner", { timeout: 45000 });
       }
