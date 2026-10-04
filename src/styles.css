@@ -746,6 +746,30 @@ select:focus {
   color: var(--text-faint);
 }
 
+.player-resume {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 46px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+.player-resume-text {
+  flex: 1;
+  color: #fff;
+  font-size: 13px;
+}
+
+.player-resume button {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
 .reader-rich img,
 .reader-body img {
   max-width: 100%;

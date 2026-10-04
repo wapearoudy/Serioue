@@ -210,7 +210,12 @@ export function Reader({
             )}
 
             {view.rendered === "video" && view.video && (
-              <VideoPlayer src={view.video} poster={view.images[0]} title={article!.title} />
+              <VideoPlayer
+                src={view.video}
+                poster={view.images[0]}
+                title={article!.title}
+                resumeKey={articleUrl}
+              />
             )}
 
             {view.rendered === "gallery" && <Gallery images={view.images} />}

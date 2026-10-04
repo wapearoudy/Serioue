@@ -8,6 +8,7 @@
 // The backend is stubbed with an in-memory store so the page runs in a plain
 // browser; in the app the same commands go through Tauri IPC.
 
+import "./dev-tauri-stub";
 import { StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ReaderSettings, THEMES, applyReaderSettings } from "./components/ReaderSettings";

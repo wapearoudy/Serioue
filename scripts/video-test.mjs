@@ -110,6 +110,62 @@ try {
     `still tells the user to use VLC instead of playing: ${note}`,
   );
   await page.screenshot({ path: path.join(outDir, "video-error.png") });
+
+  // -- resume across a reload -----------------------------------------------
+  // Reload back to the working stream first.
+  await page.selectOption("select", { label: "HLS 多码率" });
+  await page.waitForSelector(".player-extras", { timeout: 20000 });
+
+  await page.evaluate(async () => {
+    const v = document.querySelector(".player-wrap video");
+    await v.play();
+    // Park at ~50% of the way through so there is something to resume.
+    await new Promise((r) => setTimeout(r, 300));
+    v.currentTime = v.duration * 0.5;
+    v.pause();
+  });
+  await page.waitForTimeout(400);
+
+  const stored = await page.evaluate(() => {
+    const store = JSON.parse(localStorage.getItem("serious-dev-store") ?? "{}");
+    return store.progress?.["demo:video"];
+  });
+  assert.ok(stored > 0.3 && stored < 0.7, `position not stored (${stored})`);
+  console.log(`  position stored as ${(stored * 100).toFixed(0)}% of the runtime`);
+
+  // A full reload is the honest test: a remount could reuse in-memory state.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".player-extras", { timeout: 20000 });
+  await page.waitForSelector(".player-resume", { timeout: 20000 });
+  const offer = (await page.locator(".player-resume-text").innerText()).trim();
+  console.log(`  after reload the player offers: ${offer}`);
+  assert.ok(/上次看到 \d+:\d\d/.test(offer), `unexpected resume prompt: ${offer}`);
+
+  const before = await page.evaluate(() => document.querySelector(".player-wrap video").currentTime);
+  await page.locator(".player-resume button", { hasText: "继续播放" }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".player-wrap video")?.currentTime > 1,
+    null,
+    { timeout: 10000 },
+  );
+  const after = await page.evaluate(() => document.querySelector(".player-wrap video").currentTime);
+  assert.ok(before < 0.5, `it should not have pre-seeked before asking (${before})`);
+  assert.ok(after > 4, `continue did not jump to the stored position (${after})`);
+  console.log(`  "继续播放" jumped from ${before}s to ${after}s`);
+
+  // Restarting from the top must clear the stored position.
+  await page.evaluate(() => document.querySelector(".player-wrap video").pause());
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector(".player-extras", { timeout: 20000 });
+  await page.waitForSelector(".player-resume", { timeout: 20000 });
+  await page.locator(".player-resume button", { hasText: "从头开始" }).click();
+  const cleared = await page.evaluate(() => {
+    const store = JSON.parse(localStorage.getItem("serious-dev-store") ?? "{}");
+    return store.progress?.["demo:video"];
+  });
+  assert.equal(cleared, 0, `position not cleared (${cleared})`);
+  console.log("  “从头开始” cleared the stored position");
+  await page.screenshot({ path: path.join(outDir, "video-resume.png") });
 } catch (error) {
   failed = true;
   console.error("video test failed:", error.message);

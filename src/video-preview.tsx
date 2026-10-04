@@ -6,6 +6,7 @@
 //
 // Opened at /video-preview.html while `pnpm dev` is running. Never bundled.
 
+import "./dev-tauri-stub";
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { VideoPlayer, isPlayable } from "./components/VideoPlayer";
@@ -38,7 +39,7 @@ function Preview() {
         </select>
       </div>
       <div className="main-body">
-        <VideoPlayer src={stream.src} title={stream.label} />
+        <VideoPlayer src={stream.src} title={stream.label} resumeKey="demo:video" />
         <p style={{ color: "var(--text-faint)", fontSize: 12 }}>
           isPlayable(/demo/hls/master.m3u8) = {String(isPlayable("/demo/hls/master.m3u8"))}
         </p>

@@ -90,9 +90,15 @@ pnpm test:reader    # Playwright 驱动真实浏览器
 
 - Safari / iOS 走浏览器原生 HLS；其余平台由 [hls.js](https://github.com/video-dev/hls.js) 经
   Media Source Extensions 喂给同一个 `<video>` 元素
+
+  > **为什么不问浏览器「你支持 HLS 吗」**：Edge 对 `canPlayType("application/vnd.apple.mpegurl")`
+  > 返回 `"maybe"`，但实际解不了流。信这个返回值会让所有 Windows 用户点开就是黑屏。
+  > 所以只要 hls.js 能用就走 hls.js，只在缺少 Media Source Extensions 时才把地址交给元素本身
+  > （那条路恰好就是 Safari 的原生路径）。
 - 从主播放列表解析出每个码率，**可手动切换 / 自动选择**
 - 倍速 0.75× – 2×
 - 快捷键：`空格` / `k` 播放暂停、`←/→` ±10 秒、`f` 全屏
+- **续播**：记住看到的位置，重开时提示「上次看到 6:24」，可选继续播放或从头开始
 - 失败分级处理：网络错误自动重试、解码错误自动恢复、其余给出明确原因 —— 不再一律甩锅给 VLC
 
 播放控制条用浏览器原生的（无障碍、可访问性更好），画质/倍速/全屏放在覆盖层。
@@ -115,8 +121,12 @@ quality menu offers: 自动, 1080p, 720p, 360p
 switched to 画质 360p
 restored to 画质 自动
 speed set the element to 1.5x
-HLS playback advanced to t=1.72s (readyState 4, duration 12.0s)
-dead stream reports: 视频无法播放：源可能已失效…
+HLS playback advanced to t=1.68s (readyState 4, duration 12.1s)
+dead stream reports: 网络中断，正在重试…
+position stored as 50% of the runtime
+after reload the player offers: 上次看到 0:06
+"继续播放" jumped from 0s to 6s
+"从头开始" cleared the stored position
 ```
 
 `readyState 4` 表示分片已完整解码，**是真的在播**。
