@@ -58,6 +58,16 @@ export function Reader({
   const prevChapter = position > 0 ? siblings[position - 1] : null;
   const nextChapter = position >= 0 && position < siblings.length - 1 ? siblings[position + 1] : null;
 
+  // Offer the next chapter once the reader reaches the end, the way a book
+  // does. Dismissal is remembered per chapter so it does not reappear on every
+  // scroll back up.
+  const [offerNext, setOfferNext] = useState(false);
+  const declinedNext = useRef<string | null>(null);
+  useEffect(() => {
+    setOfferNext(false);
+    declinedNext.current = null;
+  }, [currentLink]);
+
   const view = useMemo(() => {
     if (!article) return null;
     const rich = sanitize(article.html);
@@ -157,13 +167,23 @@ export function Reader({
       });
     };
 
-    const onScroll = () => persist(false);
+    const onScroll = () => {
+      persist(false);
+      // Near the end of a chapter, offer the next one.
+      const el = body.current;
+      if (!el || !nextChapter || declinedNext.current === nextChapter.link) {
+        setOfferNext(false);
+        return;
+      }
+      const atEnd = el.scrollHeight - el.clientHeight - el.scrollTop < 160;
+      setOfferNext(atEnd);
+    };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       el.removeEventListener("scroll", onScroll);
       persist(true);
     };
-  }, [article, articleUrl]);
+  }, [article, articleUrl, nextChapter]);
 
   // `]` / `[` move between chapters; `t` toggles the contents.
   useEffect(() => {
@@ -258,6 +278,30 @@ export function Reader({
               </li>
             ))}
           </ol>
+        </div>
+      )}
+
+      {offerNext && nextChapter && (
+        <div className="chapter-offer">
+          <span className="chapter-offer-text">本章已读完 · 下一章:{nextChapter.title || "继续"}</span>
+          <button
+            className="primary"
+            onClick={() => {
+              setOfferNext(false);
+              onOpenSibling?.(nextChapter);
+            }}
+          >
+            继续下一章
+          </button>
+          <button
+            className="ghost"
+            onClick={() => {
+              declinedNext.current = nextChapter.link;
+              setOfferNext(false);
+            }}
+          >
+            暂不
+          </button>
         </div>
       )}
 

@@ -9,7 +9,7 @@
 // browser; in the app the same commands go through Tauri IPC.
 
 import "./dev-tauri-stub";
-import { StrictMode, useCallback, useEffect, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ReaderSettings, THEMES, applyReaderSettings } from "./components/ReaderSettings";
 import type { ArticleItem, Settings } from "./api";
@@ -46,6 +46,8 @@ function Preview() {
   const [progress, setProgress] = useState(0);
   const [tocOpen, setTocOpen] = useState(false);
   const [chapter, setChapter] = useState(2);
+  const [offerNext, setOfferNext] = useState(false);
+  const declined = useRef<string | null>(null);
 
   // Stand-in for the list the entry came from, so the table of contents and
   // chapter navigation have something real to work with.
@@ -70,6 +72,12 @@ function Preview() {
     const el = e.currentTarget;
     const scrollable = el.scrollHeight - el.clientHeight;
     setProgress(scrollable <= 1 ? 0 : el.scrollTop / scrollable);
+    const next = chapters[chapter + 1];
+    if (!next || declined.current === next.link) {
+      setOfferNext(false);
+      return;
+    }
+    setOfferNext(scrollable - el.scrollTop < 160);
   };
 
   // Restore a remembered position on mount, the way the app does.
@@ -121,6 +129,28 @@ function Preview() {
                   </li>
                 ))}
               </ol>
+            </div>
+          )}
+          {offerNext && chapters[chapter + 1] && (
+            <div className="chapter-offer">
+              <span className="chapter-offer-text">
+                本章已读完 · 下一章:{chapters[chapter + 1].title}
+              </span>
+              <button
+                className="primary"
+                onClick={() => setChapter((c) => Math.min(chapters.length - 1, c + 1))}
+              >
+                继续下一章
+              </button>
+              <button
+                className="ghost"
+                onClick={() => {
+                  declined.current = chapters[chapter + 1].link;
+                  setOfferNext(false);
+                }}
+              >
+                暂不
+              </button>
             </div>
           )}
           <div className="main-body reader-scroll" onScroll={onScroll}>

@@ -111,6 +111,62 @@ try {
   const shown = await page.locator(".reader-meta").innerText();
   console.log(`  scrolled to 60%, reader reports: ${shown.replace(/\s+/g, " ")}`);
 
+  // -- next-chapter prompt ---------------------------------------------------
+  // Reaching the end of a chapter should offer the next one, the way a book
+  // does, and "暂不" must not bring it straight back.
+  await page.evaluate(() => {
+    const el = document.querySelector(".reader-scroll");
+    el.scrollTop = el.scrollHeight;
+  });
+  await page.waitForSelector(".chapter-offer", { timeout: 5000 });
+  const offer = (await page.locator(".chapter-offer-text").innerText()).trim();
+  assert.ok(/本章已读完/.test(offer), `unexpected offer: ${offer}`);
+  assert.ok(/第 4 章/.test(offer), `offer names the wrong chapter: ${offer}`);
+  console.log(`  end of chapter offers: ${offer}`);
+
+  await page.locator(".chapter-offer button", { hasText: "暂不" }).click();
+  await page.waitForSelector(".chapter-offer", { state: "detached", timeout: 5000 });
+  await page.evaluate(() => {
+    const el = document.querySelector(".reader-scroll");
+    el.scrollTop = 0;
+    el.scrollTop = el.scrollHeight;
+  });
+  await page.waitForTimeout(400);
+  assert.equal(
+    await page.locator(".chapter-offer").count(),
+    0,
+    "the offer came back after being dismissed",
+  );
+  console.log("  dismissing it keeps it dismissed");
+
+  // Move on a chapter: the dismissal was recorded for the chapter we skipped,
+  // so the offer should come back for the following one.
+  await page.locator(".chapter-nav button", { hasText: "下一章" }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".reader h1")?.textContent?.includes("第 4 章"),
+    null,
+    { timeout: 5000 },
+  );
+  await page.evaluate(() => {
+    const el = document.querySelector(".reader-scroll");
+    // Leave and return, or the browser fires no scroll event and the handler
+    // never runs.
+    el.scrollTop = 0;
+    el.scrollTop = el.scrollHeight;
+  });
+  await page.waitForSelector(".chapter-offer", { timeout: 5000 });
+  const secondOffer = (await page.locator(".chapter-offer-text").innerText()).trim();
+  assert.ok(/第 5 章/.test(secondOffer), `offer did not move on: ${secondOffer}`);
+  console.log(`  the next chapter offers again: ${secondOffer}`);
+
+  await page.locator(".chapter-offer button", { hasText: "继续下一章" }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".reader h1")?.textContent?.includes("第 5 章"),
+    null,
+    { timeout: 5000 },
+  );
+  console.log("  accepting the offer moves to the next chapter");
+
   await page.screenshot({ path: path.join(outDir, "reader-preview.png") });
   console.log("  screenshot: test-results/reader-preview.png");
 
@@ -119,9 +175,12 @@ try {
   await page.waitForSelector(".toc-list", { timeout: 5000 });
   const rows = await page.locator(".toc-list li").count();
   assert.equal(rows, 6, `expected 6 chapters, saw ${rows}`);
-  const currentRow = await page.locator(".toc-list li.current .toc-t").innerText();
-  assert.equal(currentRow.trim(), "第 3 章", `wrong chapter highlighted (${currentRow})`);
-  console.log(`  contents lists ${rows} chapters, highlighting "${currentRow.trim()}"`);
+  // Which chapter is current depends on what ran before, so read it back rather
+// than assuming.
+  const reading = (await page.locator(".reader h1").innerText()).trim();
+  const currentRow = (await page.locator(".toc-list li.current .toc-t").innerText()).trim();
+  assert.equal(currentRow, reading, `contents highlight ${currentRow} but the reader shows ${reading}`);
+  console.log(`  contents lists ${rows} chapters, highlighting "${currentRow}"`);
 
   // Jumping from the contents must move the reader.
   await page.locator(".toc-list li").nth(5).click();
