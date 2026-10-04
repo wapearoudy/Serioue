@@ -11,9 +11,12 @@
 //! regex operators), so it exercises the selector engine, the template engine
 //! and the JSON path together — not just the bare-URL fallback.
 
+use serious_lib::engine::verify::{self, Target};
 use serious_lib::engine::{browse, selector::Doc};
 use serious_lib::model::Source;
 use serious_lib::repo;
+use serious_lib::store::StageState;
+use std::sync::atomic::AtomicBool;
 
 const COLLECTION: &str = "https://www.yck2026.fun/yuedu/rsss/json/id/163.json";
 
@@ -162,4 +165,94 @@ fn media_extraction_from_article() {
     );
     let media = doc.media_urls();
     assert!(media.iter().any(|m| m.ends_with(".mp4")), "{media:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Source verification
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore]
+fn verifies_a_real_source_end_to_end() {
+    let sources = repo::fetch_collection(COLLECTION).expect("collection fetch failed");
+    let src = sources
+        .first()
+        .expect("collection is empty")
+        .clone();
+
+    let health = verify::verify(&src, None);
+
+    // The report must always carry every stage, in order, whatever happened.
+    let keys: Vec<_> = health.stages.iter().map(|s| s.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        vec!["rule", "homepage", "list", "detail", "search"],
+        "stage order must be stable: {health:#?}"
+    );
+
+    println!("{} -> {}", src.display_name(), health.status);
+    for s in &health.stages {
+        println!("  {} {:<6} {:>6}  {}", s.state.glyph(), s.label, format!("{}ms", s.ms), s.detail);
+    }
+
+    // The rule stage is local, so it never fails on content.
+    assert_eq!(health.stages[0].state, StageState::Ok, "{health:#?}");
+    // A stage that ran must say something useful.
+    for s in &health.stages {
+        assert!(!s.detail.trim().is_empty(), "stage {} has no detail", s.key);
+    }
+}
+
+#[test]
+#[ignore]
+fn a_dead_source_reports_a_failure_rather_than_hanging() {
+    let src = Source {
+        source_name: "dead".into(),
+        // A domain reserved by RFC 5737 that will never answer.
+        source_url: "http://192.0.2.1/".into(),
+        rule_articles: "@class=item".into(),
+        rule_content: "@class=content".into(),
+        ..Default::default()
+    };
+
+    let started = std::time::Instant::now();
+    let health = verify::verify(&src, None);
+    let elapsed = started.elapsed();
+
+    assert!(!health.ok);
+    assert!(
+        health.stages.iter().any(|s| s.state == StageState::Fail),
+        "an unreachable site must fail a stage: {health:#?}"
+    );
+    // The watchdog, not the HTTP client's own timeout, is the ceiling here.
+    assert!(elapsed < std::time::Duration::from_secs(60), "took {elapsed:?}");
+    println!("dead source rejected in {elapsed:?}: {}", health.status);
+}
+
+#[test]
+#[ignore]
+fn batch_verification_reports_every_source() {
+    let sources = repo::fetch_collection(COLLECTION).expect("collection fetch failed");
+    let targets: Vec<Target> = sources
+        .iter()
+        .take(6)
+        .map(|s| Target {
+            id: s.source_url.clone(),
+            name: s.display_name().to_string(),
+            source: s.clone(),
+        })
+        .collect();
+    let total = targets.len();
+
+    let mut seen: Vec<String> = Vec::new();
+    let outcome = verify::verify_many(targets, 3, &AtomicBool::new(false), |t, h| {
+        println!("{:<24} {}", t.name, h.status);
+        seen.push(t.id.clone());
+    });
+
+    assert_eq!(seen.len(), total);
+    assert_eq!(outcome.total, total);
+    assert_eq!(outcome.ok + outcome.warn + outcome.failed, total);
+    assert!(!outcome.cancelled);
+    println!("{total} sources: {} ok, {} warn, {} failed", outcome.ok, outcome.warn, outcome.failed);
 }

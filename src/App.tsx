@@ -7,12 +7,14 @@ import { RepoBrowser } from "./components/RepoBrowser";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { Sidebar, sourceMeta } from "./components/Sidebar";
 import { UpdateBanner } from "./components/Update";
+import { VerifyPanel } from "./components/VerifyPanel";
 import { Banner, Empty } from "./components/ui";
 
 type View =
   | { kind: "list" }
   | { kind: "reader"; item: ArticleItem }
   | { kind: "history" }
+  | { kind: "verify" }
   | { kind: "settings" };
 
 export default function App() {
@@ -132,6 +134,7 @@ export default function App() {
         onChanged={refreshSources}
         onOpenRepo={() => setShowRepo(true)}
         onOpenHistory={() => setView({ kind: "history" })}
+        onOpenVerify={() => setView({ kind: "verify" })}
         onOpenSettings={() => setView({ kind: "settings" })}
         stats={stats}
         filterOnlyFavorites={onlyFavorites}
@@ -198,6 +201,19 @@ export default function App() {
 
         {view.kind === "history" && (
           <HistoryPanel onOpen={openHistoryEntry} onClose={() => setView({ kind: "list" })} />
+        )}
+
+        {view.kind === "verify" && (
+          <VerifyPanel
+            sources={sources}
+            selectedId={selectedId}
+            onSelect={(id) => {
+              setSelectedId(id);
+              setView({ kind: "list" });
+            }}
+            onBack={() => setView({ kind: "list" })}
+            onChecked={refreshSources}
+          />
         )}
 
         {view.kind === "settings" && (

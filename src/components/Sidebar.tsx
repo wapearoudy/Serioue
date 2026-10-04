@@ -9,6 +9,7 @@ type Props = {
   onChanged: () => void;
   onOpenRepo: () => void;
   onOpenHistory: () => void;
+  onOpenVerify: () => void;
   onOpenSettings: () => void;
   stats: { sources: number; working: number; checked: number } | null;
   filterOnlyFavorites: boolean;
@@ -18,7 +19,6 @@ type Props = {
 
 export function Sidebar(props: Props) {
   const [query, setQuery] = useState("");
-  const [checking, setChecking] = useState(false);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -52,18 +52,6 @@ export function Sidebar(props: Props) {
       props.onChanged();
     } catch (err) {
       window.alert(errorMessage(err));
-    }
-  }
-
-  async function checkAll() {
-    setChecking(true);
-    try {
-      await api.checkAll();
-      props.onChanged();
-    } catch (err) {
-      window.alert(errorMessage(err));
-    } finally {
-      setChecking(false);
     }
   }
 
@@ -101,6 +89,9 @@ export function Sidebar(props: Props) {
 
       <div className="tabs">
         <button className="tab active">源</button>
+        <button className="tab" onClick={props.onOpenVerify}>
+          校验
+        </button>
         <button className="tab" onClick={props.onOpenHistory}>
           历史
         </button>
@@ -150,12 +141,16 @@ export function Sidebar(props: Props) {
       </div>
 
       <div className="sidebar-foot">
-        <button onClick={checkAll} disabled={checking || props.sources.length === 0}>
-          {checking ? "检测中…" : "检测全部"}
+        <button onClick={props.onOpenVerify} disabled={props.sources.length === 0}>
+          校验全部
         </button>
         <span className="spacer" />
         {props.stats && props.stats.checked > 0 && (
-          <span title="已检测源中可用的数量">
+          <span
+            title="已检测源中可用的数量"
+            onClick={props.onOpenVerify}
+            style={{ cursor: "pointer" }}
+          >
             {props.stats.working}/{props.stats.checked} 可用
           </span>
         )}

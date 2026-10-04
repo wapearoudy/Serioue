@@ -29,6 +29,43 @@ pub struct StoredSource {
     pub note: String,
 }
 
+/// Outcome of one verification stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StageState {
+    Ok,
+    /// Passed, but something looks off — the user should read the detail.
+    Warn,
+    Fail,
+    /// Not applicable to this source (e.g. no `searchUrl`).
+    Skip,
+}
+
+impl StageState {
+    /// A glyph the UI can show next to the stage name.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            StageState::Ok => "✓",
+            StageState::Warn => "!",
+            StageState::Fail => "✕",
+            StageState::Skip => "–",
+        }
+    }
+}
+
+/// One line of the verification report: what was tried and what came back.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StageResult {
+    /// Stable identifier, used by the UI to lay stages out in a fixed order.
+    pub key: String,
+    pub label: String,
+    pub state: StageState,
+    /// A sentence the user can act on, not a raw error dump.
+    pub detail: String,
+    #[serde(default)]
+    pub ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Health {
     pub ok: bool,
@@ -37,6 +74,11 @@ pub struct Health {
     pub checked_at: i64,
     #[serde(default)]
     pub sample: String,
+    /// Per-stage detail. Absent in stores written before source verification.
+    #[serde(default)]
+    pub stages: Vec<StageResult>,
+    #[serde(default)]
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -277,9 +319,28 @@ impl Store {
     }
 
     pub fn set_health(&self, id: &str, health: Health) -> AppResult<()> {
+        self.set_health_batch(&[(id.to_string(), health)])
+    }
+
+    /// Apply many health results under a single lock and a single write.
+    ///
+    /// A full-library check produces one result per source; writing the whole
+    /// `sources.json` once per result would serialise the worker pool on disk
+    /// I/O for no benefit.
+    pub fn set_health_batch(&self, items: &[(String, Health)]) -> AppResult<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
         let mut inner = self.inner.lock().map_err(|_| AppError::Storage("lock poisoned".into()))?;
-        if let Some(s) = inner.sources.get_mut(id) {
-            s.health = Some(health);
+        let mut changed = false;
+        for (id, health) in items {
+            if let Some(s) = inner.sources.get_mut(id) {
+                s.health = Some(health.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
         }
         self.write_atomic("sources.json", &inner.sources.values().collect::<Vec<_>>())?;
         Ok(())

@@ -19,7 +19,10 @@ pub fn run() {
         .setup(|app| {
             let dir = commands::store_dir(app.handle())?;
             let store = store::Store::new(dir)?;
-            app.manage(commands::AppState { store: Arc::new(store) });
+            app.manage(commands::AppState {
+                store: Arc::new(store),
+                cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            });
 
             // Check for a new version shortly after launch. Failures are
             // swallowed so an offline machine is never greeted by an error.
@@ -46,6 +49,7 @@ pub fn run() {
             commands::search_source,
             commands::check_source,
             commands::check_all,
+            commands::cancel_check,
             commands::list_history,
             commands::clear_history,
             commands::list_collections,

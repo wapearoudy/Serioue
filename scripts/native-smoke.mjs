@@ -154,6 +154,61 @@ try {
     await page.screenshot({ path: path.join(outDir, "native-browse.png") });
     console.log(`  sidebar shows ${imported} source(s)`);
     console.log("  screenshot: test-results/native-browse.png");
+
+    // -- Source verification -------------------------------------------------
+    await page.getByRole("button", { name: "校验", exact: true }).click();
+    await page.waitForSelector(".verify-list, .empty", { timeout: 10000 });
+    await page.screenshot({ path: path.join(outDir, "native-verify-idle.png") });
+
+    // Checking all 71 sources would take minutes, so drive two of them
+    // through the real command and assert the streamed events land in the UI.
+    const someIds = await page.evaluate(async () => {
+      const all = await window.__TAURI_INTERNALS__.invoke("list_sources", { filter: null });
+      return all.slice(0, 2).map((s) => s.id);
+    });
+    assert.equal(someIds.length, 2, "could not pick sources to verify");
+
+    const summary = await page.evaluate(
+      async (ids) =>
+        window.__TAURI_INTERNALS__.invoke("check_all", { ids, scope: null }),
+      someIds,
+    );
+    assert.equal(summary.total, 2, `unexpected summary: ${JSON.stringify(summary)}`);
+    assert.equal(summary.ok + summary.warn + summary.failed, 2);
+
+    // The counters must be reflected in the rows, not just in the payload.
+    for (const [kind, key] of [["ok", "ok"], ["warn", "warn"], ["fail", "failed"]]) {
+      const want = summary[key];
+      const got = await page.locator(`.verify-row .verify-dot.${kind}`).count();
+      assert.equal(got, want, `${want} ${kind} source(s) expected, ${got} dot(s) rendered`);
+    }
+
+    // The event listener must have painted a row per finished source.
+    await page.waitForSelector(".verify-row", { timeout: 20000 });
+    const chips = await page.locator(".verify-row .chip").count();
+    assert.ok(chips >= 5, `stage chips did not render (found ${chips})`);
+    await page.screenshot({ path: path.join(outDir, "native-verify.png") });
+
+    // Expanding a checked row must show the full stage report. Rows sort
+// problems-first, so the verified ones are not necessarily at the top.
+    const reported = page.locator(".verify-row").filter({ has: page.locator(".chip") }).first();
+    await reported.locator(".verify-line").click();
+    await page.waitForSelector(".verify-table", { timeout: 10000 });
+    const stageRows = await page.locator(".verify-table tr").count();
+    assert.equal(stageRows, 5, `expected 5 stages, saw ${stageRows}`);
+    const stageText = await page.locator(".verify-table tr").allInnerTexts();
+    console.log(`  verification summary: ${JSON.stringify(summary)}`);
+    for (const t of stageText) console.log(`    ${t.replace(/\s+/g, " ")}`);
+    await page.screenshot({ path: path.join(outDir, "native-verify-detail.png") });
+
+    // A single-source check must return the same shape.
+    const one = await page.evaluate(
+      async (id) => window.__TAURI_INTERNALS__.invoke("check_source", { id }),
+      someIds[0],
+    );
+    assert.equal(one.stages.length, 5, "check_source did not report every stage");
+    assert.ok(one.duration_ms >= 0, "check_source did not report a duration");
+    console.log("  screenshot: test-results/native-verify-detail.png");
   }
 } catch (error) {
   failed = true;

@@ -1,15 +1,19 @@
 use crate::engine::browse::{self, ArticlePage, PageRequest};
+use crate::engine::verify::{self, Target};
 use crate::error::{AppError, AppResult};
 use crate::model::{Category, Source};
 use crate::repo;
 use crate::store::{Collection, Health, HistoryEntry, Settings, SourcePatch, StoredSource, Store};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 
 pub struct AppState {
     pub store: Arc<Store>,
+    /// Set by `cancel_check`; the batch worker pool polls it between stages.
+    pub cancel: Arc<AtomicBool>,
 }
 
 /// Handle for the source JSON the user dragged onto the window.
@@ -350,123 +354,144 @@ pub async fn search_source(
 }
 
 // ---------------------------------------------------------------------------
-// Health checks
+// Source verification
 // ---------------------------------------------------------------------------
 
-/// Probe one source: fetch its first page and count the parsed items.
+/// Verify one source: rule, homepage, list, detail, search.
+///
+/// The result is persisted so the sidebar dot reflects it, and returned so the
+/// caller can show the full stage report immediately.
 #[tauri::command]
 pub async fn check_source(state: State<'_, AppState>, id: String) -> AppResult<Health> {
     let store = state.store.clone();
     let health = blocking(move || {
-        let stored = store
-            .source(&id)
-            .ok_or_else(|| AppError::NotFound(id.clone()))?;
-        let result = probe(&stored.source);
-        store.set_health(&id, result.clone())?;
-        Ok(result)
+        let stored = store.source(&id).ok_or_else(|| AppError::NotFound(id.clone()))?;
+        let health = verify::verify(&stored.source, None);
+        store.set_health(&id, health.clone())?;
+        Ok(health)
     })
     .await?;
     Ok(health)
 }
 
-fn probe(source: &Source) -> Health {
-    let now = chrono::Utc::now().timestamp();
-    let categories = browse::categories(source);
-    let template = categories
-        .first()
-        .map(|c| c.url.clone())
-        .unwrap_or_else(|| source.source_url.clone());
-
-    match browse::load_page(source, &PageRequest::first(&template)) {
-        Ok(page) => Health {
-            ok: !page.items.is_empty(),
-            status: if page.items.is_empty() {
-                "可访问，但没有解析出内容".into()
-            } else {
-                "正常".into()
-            },
-            item_count: page.items.len(),
-            checked_at: now,
-            sample: page
-                .items
-                .first()
-                .map(|i| crate::util::short_url(&i.title, 40))
-                .unwrap_or_default(),
-        },
-        Err(e) => Health {
-            ok: false,
-            status: e.to_string(),
-            item_count: 0,
-            checked_at: now,
-            sample: String::new(),
-        },
-    }
-}
-
 #[derive(Debug, Clone, Serialize)]
-pub struct CheckProgress {
+pub struct CheckEvent {
     pub done: usize,
     pub total: usize,
     pub current: String,
+    pub source_id: String,
+    pub name: String,
+    pub health: Health,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckSummary {
     pub total: usize,
     pub ok: usize,
+    pub warn: usize,
     pub failed: usize,
+    pub cancelled: bool,
 }
 
-/// Check many sources, streaming progress events to the frontend.
+/// Which sources a batch run should cover.
+fn in_scope(stored: &StoredSource, scope: &str, now: i64) -> bool {
+    match scope {
+        // Re-check everything that did not come out clean, warnings included.
+        "failed" => stored.health.as_ref().map(|h| !h.ok).unwrap_or(false),
+        // Never checked.
+        "unchecked" => stored.health.is_none(),
+        // Healthy, but the last check is old enough to be worth repeating.
+        "stale" => match &stored.health {
+            Some(h) => !h.ok || now - h.checked_at > STALE_AFTER_SECONDS,
+            None => true,
+        },
+        _ => true,
+    }
+}
+
+/// A successful check older than this is offered for re-checking.
+const STALE_AFTER_SECONDS: i64 = 3 * 24 * 3600;
+
+/// How many completed results to buffer before writing `sources.json`.
+const FLUSH_EVERY: usize = 8;
+
+/// Verify many sources on a worker pool, streaming each result to the UI.
+///
+/// `scope` narrows the run to `"all"`, `"failed"`, `"unchecked"` or `"stale"`;
+/// `ids`, when given, narrows it further.
 #[tauri::command]
 pub async fn check_all(
     state: State<'_, AppState>,
     ids: Option<Vec<String>>,
+    scope: Option<String>,
     app: tauri::AppHandle,
 ) -> AppResult<CheckSummary> {
     let store = state.store.clone();
+    let scope = scope.unwrap_or_else(|| "all".to_string());
+    let settings_concurrent = store.settings().concurrent_checks;
+
     let store_for_list = store.clone();
-    let targets: Vec<StoredSource> = blocking(move || {
+    let targets: Vec<Target> = blocking(move || {
+        let now = chrono::Utc::now().timestamp();
         let all = store_for_list.sources();
-        Ok(match ids {
-            Some(list) => all.into_iter().filter(|s| list.contains(&s.id)).collect(),
-            None => all,
-        })
+        Ok(all
+            .into_iter()
+            .filter(|s| ids.as_ref().map(|l| l.contains(&s.id)).unwrap_or(true))
+            .filter(|s| in_scope(s, &scope, now))
+            .map(|s| Target { id: s.id, name: s.source.display_name().to_string(), source: s.source })
+            .collect())
     })
     .await?;
 
     let total = targets.len();
-    let app2 = app.clone();
-    let summary = tauri::async_runtime::spawn_blocking(move || {
-        let mut ok = 0usize;
-        let mut failed = 0usize;
-        for (i, stored) in targets.iter().enumerate() {
-            let _ = app2.emit(
+    let cancel = state.cancel.clone();
+    cancel.store(false, Ordering::Relaxed);
+
+    let workers = if settings_concurrent { 6 } else { 1 };
+
+    // `verify_many` spawns its own worker pool and runs `sink` on this
+    // blocking-pool thread, so persisting and emitting stay in one place.
+    let outcome = blocking(move || {
+        let mut batch: Vec<(String, Health)> = Vec::with_capacity(FLUSH_EVERY);
+        let mut done = 0usize;
+        let outcome = verify::verify_many(targets, workers, &cancel, |target, health| {
+            done += 1;
+            let _ = app.emit(
                 "check-progress",
-                CheckProgress {
-                    done: i,
+                CheckEvent {
+                    done,
                     total,
-                    current: stored.source.display_name().to_string(),
+                    current: target.name.clone(),
+                    source_id: target.id.clone(),
+                    name: target.name.clone(),
+                    health: health.clone(),
                 },
             );
-            let health = probe(&stored.source);
-            if health.ok {
-                ok += 1;
-            } else {
-                failed += 1;
+            batch.push((target.id.clone(), health));
+            if batch.len() >= FLUSH_EVERY {
+                let _ = store.set_health_batch(&batch);
+                batch.clear();
             }
-            let _ = store.set_health(&stored.id, health);
-        }
-        let _ = app2.emit(
-            "check-progress",
-            CheckProgress { done: total, total, current: String::new() },
-        );
-        CheckSummary { total, ok, failed }
+        });
+        let _ = store.set_health_batch(&batch);
+        Ok::<_, AppError>(outcome)
     })
-    .await
-    .map_err(|e| AppError::other(e.to_string()))?;
+    .await?;
 
-    Ok(summary)
+    Ok(CheckSummary {
+        total: outcome.total,
+        ok: outcome.ok,
+        warn: outcome.warn,
+        failed: outcome.failed,
+        cancelled: outcome.cancelled,
+    })
+}
+
+/// Ask a running `check_all` to stop after the sources in flight.
+#[tauri::command]
+pub async fn cancel_check(state: State<'_, AppState>) -> AppResult<()> {
+    state.cancel.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

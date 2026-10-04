@@ -5,12 +5,26 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 // Types mirroring the Rust command signatures
 // ---------------------------------------------------------------------------
 
+/** Outcome of one verification stage. */
+export type StageState = "ok" | "warn" | "fail" | "skip";
+
+export interface StageResult {
+  key: string;
+  label: string;
+  state: StageState;
+  detail: string;
+  ms: number;
+}
+
 export interface Health {
   ok: boolean;
   status: string;
   item_count: number;
   checked_at: number;
   sample: string;
+  /** Absent for sources checked before source verification existed. */
+  stages: StageResult[];
+  duration_ms: number;
 }
 
 export interface SourceSummary {
@@ -115,16 +129,24 @@ export interface Stats {
   working: number;
 }
 
-export interface CheckProgress {
+/** Which sources a batch verification should cover. */
+export type CheckScope = "all" | "failed" | "unchecked" | "stale";
+
+export interface CheckEvent {
   done: number;
   total: number;
   current: string;
+  source_id: string;
+  name: string;
+  health: Health;
 }
 
 export interface CheckSummary {
   total: number;
   ok: number;
+  warn: number;
   failed: number;
+  cancelled: boolean;
 }
 
 /** Result of an update check. */
@@ -195,10 +217,18 @@ export const api = {
   searchSource: (id: string, keyword: string) =>
     invoke<ArticlePage>("search_source", { id, keyword }),
 
+  /** Verify one source through every stage and store the report. */
   checkSource: (id: string) => invoke<Health>("check_source", { id }),
 
-  checkAll: (ids?: string[]) =>
-    invoke<CheckSummary>("check_all", { ids: ids ?? null }),
+  /** Verify many sources, streaming `CheckEvent`s as each one finishes. */
+  checkAll: (opts: { ids?: string[]; scope?: CheckScope } = {}) =>
+    invoke<CheckSummary>("check_all", {
+      ids: opts.ids ?? null,
+      scope: opts.scope ?? null,
+    }),
+
+  /** Ask a running `checkAll` to stop after the sources in flight. */
+  cancelCheck: () => invoke<void>("cancel_check"),
 
   listHistory: (limit?: number) => invoke<HistoryEntry[]>("list_history", { limit: limit ?? null }),
 
@@ -232,8 +262,8 @@ export const api = {
 // ---------------------------------------------------------------------------
 
 export const events = {
-  onCheckProgress: (cb: (p: CheckProgress) => void): Promise<UnlistenFn> =>
-    listen<CheckProgress>("check-progress", (e) => cb(e.payload)),
+  onCheckProgress: (cb: (p: CheckEvent) => void): Promise<UnlistenFn> =>
+    listen<CheckEvent>("check-progress", (e) => cb(e.payload)),
 
   onPageLoaded: (cb: (p: ArticlePage) => void): Promise<UnlistenFn> =>
     listen<ArticlePage>("page-loaded", (e) => cb(e.payload)),
