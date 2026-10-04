@@ -312,6 +312,17 @@ pub fn parse_list(src: &Source, body: &str, base_url: &str) -> (Vec<ArticleItem>
     let mut seen = std::collections::HashSet::new();
     items.retain(|it| it.link.is_empty() || seen.insert(it.link.clone()));
 
+    // The rules matched nothing. Plenty of sites render their content links in
+    // the HTML and use JavaScript only for chrome, extras or lazy images, so a
+    // link list is often a working substitute where the selector is stale.
+    // Falling back beats showing an empty page.
+    if items.is_empty() && json.is_none() {
+        let links = extract_links(&doc, base_url);
+        if links.len() >= 3 {
+            return (links, next(&doc, None));
+        }
+    }
+
     let next = find_next_page(src, &doc, json.as_ref(), base_url, &src.rule_next_page);
     (items, next)
 }
@@ -954,6 +965,39 @@ mod tests {
         let body = "<html><body><article>一段正文，没有链接。</article></body></html>";
         let (items, _) = parse_list(&src, body, "https://example.com/");
         assert_eq!(items.len(), 1, "a lone article is not a link list");
+    }
+
+    #[test]
+    fn a_stale_list_rule_falls_back_to_the_page_links() {
+        // The selector matches nothing — common on sites that changed markup.
+        // The page's own links are usually still good enough to browse.
+        let src = Source {
+            source_url: "https://example.com/".into(),
+            rule_articles: "class.gone".into(),
+            rule_title: "a@text".into(),
+            rule_link: "a@href".into(),
+            ..Default::default()
+        };
+        let body: String = (1..=6)
+            .map(|i| format!("<p><a href=\"/post/{i}\">文章 {i}</a></p>"))
+            .collect();
+        let (items, _) = parse_list(&src, &format!("<html><body>{body}</body></html>"), "https://example.com/");
+        assert_eq!(items.len(), 6, "{}", items.len());
+        assert_eq!(items[0].title, "文章 1");
+        assert_eq!(items[0].link, "https://example.com/post/1");
+    }
+
+    #[test]
+    fn the_fallback_stays_quiet_when_the_page_has_few_links() {
+        let src = Source {
+            source_url: "https://example.com/".into(),
+            rule_articles: "class.gone".into(),
+            ..Default::default()
+        };
+        let body = r#"<html><body><a href="/only">唯一</a><p>正文</p></body></html>"#;
+        let (items, _) = parse_list(&src, body, "https://example.com/");
+        // One link is navigation, not a listing.
+        assert!(items.is_empty(), "{items:#?}");
     }
 
     #[test]

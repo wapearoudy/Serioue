@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import Hls from "hls.js";
 import { api } from "../api";
 import type { Subtitle } from "./media";
+
+/**
+ * hls.js is ~500 kB, which is more than the rest of the app combined.
+ *
+ * It is imported lazily so a user who only ever reads pays nothing for it, and
+ * so the first paint is not waiting on a parser they may never need.
+ */
+type HlsModule = typeof import("hls.js");
+type HlsInstance = import("hls.js").default;
 
 /** Formats the `<video>` element can usually play directly. */
 const VIDEO_EXT = /\.(mp4|webm|ogg|ogv|mov|mkv)(\?|#|$)/i;
@@ -134,7 +142,7 @@ export function VideoPlayer({
 }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
-  const hls = useRef<Hls | null>(null);
+  const hlsRef = useRef<HlsInstance | null>(null);
   const savedAt = useRef(0);
 
   const [err, setErr] = useState<string | null>(null);
@@ -148,56 +156,89 @@ export function VideoPlayer({
   const [finished, setFinished] = useState(false);
 
   const isHls = HLS_EXT.test(src);
+  /** True when this platform can play HLS through Media Source. */
+  const [mseAvailable, setMseAvailable] = useState(true);
+
+  useEffect(() => {
+    if (!isHls) {
+      setMseAvailable(true);
+      return;
+    }
+    let cancelled = false;
+    import("hls.js")
+      .then((mod: HlsModule) => {
+        if (!cancelled) setMseAvailable(mod.default.isSupported());
+      })
+      .catch(() => {
+        if (!cancelled) setMseAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isHls]);
+
   /** True when hls.js will drive this element through Media Source. */
-  const useHls = isHls && Hls.isSupported();
+  const useHls = isHls && mseAvailable;
 
   useEffect(() => {
     const el = video.current;
     if (!el || !useHls) return;
 
-    const instance = new Hls({ enableWorker: true, lowLatencyMode: false });
-    hls.current = instance;
+    let instance: HlsInstance | null = null;
+    let cancelled = false;
 
-    instance.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
-      const parsed = data.levels
-        .map((l, i) => ({
-          index: i,
-          label: levelLabel(l.width ?? 0, l.height ?? 0, l.bitrate ?? 0),
-        }))
-        .sort((a, b) => a.index - b.index);
-      setLevels(parsed);
-      setErr(null);
-    });
+    void (async () => {
+      const { default: Hls } = await import("hls.js");
+      // The source may have changed, or the player may have unmounted, while
+      // the module was still loading.
+      if (cancelled || !video.current) return;
 
-    instance.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
-      // Auto is -1; report which rendition actually started playing.
-      if (data.level >= 0) setLevel(instance.autoLevelEnabled ? -1 : data.level);
-    });
+      const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+      instance = hls;
+      hlsRef.current = hls;
 
-    instance.on(Hls.Events.ERROR, (_e, data) => {
-      if (!data.fatal) return;
-      switch (data.type) {
-        case Hls.ErrorTypes.NETWORK_ERROR:
-          // One retry usually clears a transient fetch failure.
-          instance.startLoad();
-          setErr("网络中断，正在重试…");
-          break;
-        case Hls.ErrorTypes.MEDIA_ERROR:
-          instance.recoverMediaError();
-          setErr("解码出错，正在恢复…");
-          break;
-        default:
-          setErr(`视频无法播放：${data.details || "源可能已失效"}`);
-          break;
-      }
-    });
+      hls.on(Hls.Events.MANIFEST_PARSED, (_e, data) => {
+        const parsed = data.levels
+          .map((l, i) => ({
+            index: i,
+            label: levelLabel(l.width ?? 0, l.height ?? 0, l.bitrate ?? 0),
+          }))
+          .sort((a, b) => a.index - b.index);
+        setLevels(parsed);
+        setErr(null);
+      });
 
-    instance.loadSource(src);
-    instance.attachMedia(el);
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
+        // Auto is -1; report which rendition actually started playing.
+        if (data.level >= 0) setLevel(hls.autoLevelEnabled ? -1 : data.level);
+      });
+
+      hls.on(Hls.Events.ERROR, (_e, data) => {
+        if (!data.fatal) return;
+        switch (data.type) {
+          case Hls.ErrorTypes.NETWORK_ERROR:
+            // One retry usually clears a transient fetch failure.
+            hls.startLoad();
+            setErr("网络中断，正在重试…");
+            break;
+          case Hls.ErrorTypes.MEDIA_ERROR:
+            hls.recoverMediaError();
+            setErr("解码出错，正在恢复…");
+            break;
+          default:
+            setErr(`视频无法播放：${data.details || "源可能已失效"}`);
+            break;
+        }
+      });
+
+      hls.loadSource(src);
+      hls.attachMedia(el);
+    })();
 
     return () => {
-      instance.destroy();
-      hls.current = null;
+      cancelled = true;
+      instance?.destroy();
+      hlsRef.current = null;
     };
   }, [src, useHls]);
 
@@ -311,7 +352,7 @@ export function VideoPlayer({
   }, [resumeKey]);
 
   const changeLevel = useCallback((index: number) => {
-    const instance = hls.current;
+    const instance = hlsRef.current;
     if (instance) instance.currentLevel = index;
     setLevel(index);
     setPanel(null);
