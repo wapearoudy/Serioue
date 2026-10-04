@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { api, errorMessage, type SourceSummary } from "../api";
+import { useEffect, useMemo, useState } from "react";
+import { api, errorMessage, type ContinueEntry, type SourceSummary } from "../api";
 import { compactNumber, timeAgo } from "./ui";
 
 type Props = {
@@ -15,10 +15,31 @@ type Props = {
   filterOnlyFavorites: boolean;
   onToggleFilter: (v: boolean) => void;
   busy: boolean;
+  /** Open a half-read article from the 继续阅读 shelf. */
+  onContinue?: (entry: ContinueEntry) => void;
+  /** Bumped by the parent whenever reading progress changes. */
+  progressToken?: number;
 };
 
 export function Sidebar(props: Props) {
   const [query, setQuery] = useState("");
+  const [reading, setReading] = useState<ContinueEntry[]>([]);
+
+  // Re-fetch whenever the parent reports that progress moved.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .continueReading()
+      .then((list) => {
+        if (!cancelled) setReading(list);
+      })
+      .catch(() => {
+        /* the shelf is a convenience; failing to load it must not break the app */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [props.progressToken]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -101,6 +122,29 @@ export function Sidebar(props: Props) {
       </div>
 
       <div className="sidebar-body">
+        {reading.length > 0 && (
+          <div className="continue">
+            <div className="continue-head">继续阅读</div>
+            {reading.map((entry) => (
+              <div
+                key={entry.url}
+                className="continue-row"
+                onClick={() => props.onContinue?.(entry)}
+                title={`${entry.title}\n${entry.source_name}`}
+              >
+                <div className="continue-title">{entry.title || entry.url}</div>
+                <div className="continue-meta">
+                  {entry.source_name} · {timeAgo(entry.viewed_at)} · 已读{" "}
+                  {Math.round(entry.progress * 100)}%
+                </div>
+                <div className="continue-bar">
+                  <div style={{ width: `${Math.round(entry.progress * 100)}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {visible.length === 0 ? (
           <div style={{ color: "var(--text-faint)", padding: 16, fontSize: 13, lineHeight: 1.8 }}>
             {props.sources.length === 0

@@ -535,6 +535,24 @@ pub struct SourcePatch {
     pub note: Option<String>,
 }
 
+/// Which articles the 继续阅读 shelf should offer, and their positions.
+///
+/// Returns `(url, progress)` pairs so the caller can join them against history
+/// without repeating the thresholds.
+pub fn resumable(history: &[HistoryEntry], progress: &dyn Fn(&str) -> Option<f32>) -> Vec<(String, f32)> {
+    history
+        .iter()
+        .filter_map(|h| {
+            let p = progress(&h.url).unwrap_or(0.0);
+            // Untouched and finished articles are not worth offering.
+            if p <= 0.02 || p >= 0.98 {
+                return None;
+            }
+            Some((h.url.clone(), p))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,6 +599,50 @@ fn test_dir(tag: &str) -> PathBuf {
         store.set_progress("https://x.com/b", -3.0).unwrap();
         assert_eq!(store.progress("https://x.com/b"), Some(0.0));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_half_read_articles_are_offered_back() {
+        let history: Vec<HistoryEntry> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|u| HistoryEntry {
+                id: String::new(),
+                source_id: "s".into(),
+                title: format!("T{u}"),
+                url: format!("https://x.com/{u}"),
+                source_name: "demo".into(),
+                viewed_at: 0,
+            })
+            .collect();
+        let known = |u: &str| -> Option<f32> {
+            match u.rsplit('/').next()? {
+                "a" => Some(0.5),  // genuinely half read
+                "b" => Some(0.0),  // opened but never scrolled
+                "c" => Some(0.99), // finished
+                "d" => Some(1.0),  // finished
+                _ => None,         // no record at all
+            }
+        };
+        let got = resumable(&history, &known);
+        assert_eq!(
+            got,
+            vec![("https://x.com/a".to_string(), 0.5)],
+            "only the half-read article should be offered: {got:?}"
+        );
+    }
+
+    #[test]
+    fn nothing_in_progress_means_an_empty_shelf() {
+        let history: Vec<HistoryEntry> = vec![HistoryEntry {
+            id: String::new(),
+            source_id: "s".into(),
+            title: "T".into(),
+            url: "https://x.com/a".into(),
+            source_name: "demo".into(),
+            viewed_at: 0,
+        }];
+        assert!(resumable(&history, &|_| None).is_empty());
+        assert!(resumable(&history, &|_| Some(0.9)).len() == 1);
     }
 
     #[test]

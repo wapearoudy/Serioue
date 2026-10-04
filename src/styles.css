@@ -569,6 +569,57 @@ select:focus {
   min-height: 0;
 }
 
+/* --- 继续阅读 shelf ------------------------------------------------------- */
+
+.continue {
+  padding: 10px 8px 4px;
+}
+
+.continue-head {
+  font-size: 11px;
+  color: var(--text-faint);
+  letter-spacing: 0.06em;
+  padding: 0 8px 6px;
+}
+
+.continue-row {
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  margin-bottom: 6px;
+}
+
+.continue-row:hover {
+  background: var(--bg-hover);
+}
+
+.continue-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.continue-meta {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin: 2px 0 6px;
+}
+
+.continue-bar {
+  height: 2px;
+  background: var(--border);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.continue-bar > div {
+  height: 100%;
+  background: var(--accent);
+}
+
 .reader-settings {
   position: relative;
 }

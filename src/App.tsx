@@ -39,6 +39,8 @@ export default function App() {
   /** The list the reader opened from, used for the table of contents. */
   const [siblings, setSiblings] = useState<ArticleItem[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
+  /** Bumped whenever a reading position moves, so the sidebar can refresh. */
+  const [progressToken, setProgressToken] = useState(0);
 
   // Reader preferences drive CSS variables and the reading theme, so they are
   // loaded once at startup rather than when the reader first opens.
@@ -162,6 +164,7 @@ export default function App() {
           setSelectedId(id);
           setView({ kind: "list" });
           setArticle(null);
+          setProgressToken((t) => t + 1);
         }}
         onChanged={refreshSources}
         onOpenRepo={() => setShowRepo(true)}
@@ -171,6 +174,23 @@ export default function App() {
         stats={stats}
         filterOnlyFavorites={onlyFavorites}
         onToggleFilter={setOnlyFavorites}
+        progressToken={progressToken}
+        onContinue={(entry) => {
+          // Resuming an article means switching to its source first, so the
+          // category tabs and contents come from the right place.
+          setSelectedId(entry.source_id);
+          void api
+            .loadArticle(entry.source_id, entry.url, entry.title)
+            .then((res) => {
+              setArticleKind("article");
+              setArticle(res);
+              setView({
+                kind: "reader",
+                item: { title: entry.title, link: entry.url, image: "", date: "", kind: "article" },
+              });
+            })
+            .catch((e) => setError(errorMessage(e)));
+        }}
         busy={bootBusy}
       />
 
@@ -234,7 +254,11 @@ export default function App() {
             onOpenSibling={openArticle}
             settings={settings}
             onSettingsChange={changeSettings}
-            onBack={() => setView({ kind: "list" })}
+            onBack={() => {
+              setView({ kind: "list" });
+              // Leaving the reader is when a new reading position exists.
+              setProgressToken((t) => t + 1);
+            }}
             onOpenExternal={(url) => window.open(url, "_blank")}
           />
         )}

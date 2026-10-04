@@ -104,6 +104,16 @@ export interface HistoryEntry {
   viewed_at: number;
 }
 
+/** A half-read article offered back to the user. */
+export interface ContinueEntry {
+  url: string;
+  title: string;
+  source_id: string;
+  source_name: string;
+  viewed_at: number;
+  progress: number;
+}
+
 export interface Collection {
   name: string;
   url: string;
@@ -244,6 +254,9 @@ export const api = {
   listHistory: (limit?: number) => invoke<HistoryEntry[]>("list_history", { limit: limit ?? null }),
 
   clearHistory: () => invoke<void>("clear_history"),
+
+  /** Articles started but not finished, newest first. */
+  continueReading: () => invoke<ContinueEntry[]>("continue_reading"),
 
   /** How far through an article the reader had got (0-1). */
   getProgress: (url: string) => invoke<number>("get_progress", { url }),

@@ -526,6 +526,51 @@ pub async fn save_progress(state: State<'_, AppState>, url: String, ratio: f32) 
     blocking(move || store.set_progress(&url, ratio)).await
 }
 
+/// A half-read article the user can pick up again.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContinueEntry {
+    pub url: String,
+    pub title: String,
+    pub source_id: String,
+    pub source_name: String,
+    pub viewed_at: i64,
+    /// 0.0-1.0 of the way through.
+    pub progress: f32,
+}
+
+/// Articles that were started but not finished, newest first.
+///
+/// Without this the only way back to yesterday's article is the history list,
+/// which is where a reader looks least often.
+#[tauri::command]
+pub async fn continue_reading(state: State<'_, AppState>) -> AppResult<Vec<ContinueEntry>> {
+    let store = state.store.clone();
+    blocking(move || {
+        let history = store.history(200);
+        // The thresholds live in one place so they can be tested directly.
+        let positions: std::collections::HashMap<String, f32> =
+            crate::store::resumable(&history, &|url| store.progress(url))
+                .into_iter()
+                .collect();
+        Ok(history
+            .into_iter()
+            .filter_map(|h| {
+                let progress = *positions.get(&h.url)?;
+                Some(ContinueEntry {
+                    url: h.url,
+                    title: h.title,
+                    source_id: h.source_id,
+                    source_name: h.source_name,
+                    viewed_at: h.viewed_at,
+                    progress,
+                })
+            })
+            .take(5)
+            .collect())
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn list_collections(state: State<'_, AppState>) -> AppResult<Vec<Collection>> {
     let store = state.store.clone();
