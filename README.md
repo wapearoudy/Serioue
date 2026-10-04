@@ -125,6 +125,10 @@ pnpm test:reader    # Playwright 驱动真实浏览器
 
 播放控制条用浏览器原生的（无障碍、可访问性更好），画质/倍速/全屏放在覆盖层。
 
+> **跨域限制**：hls.js 通过 XHR 拉取播放列表和分片，因此**视频服务器必须带
+> `Access-Control-Allow-Origin`** 才会被放行。绝大多数正规 CDN 都有；个别自建源没有，
+> 表现是播放器能打开但一直转圈。这种源可以用「在浏览器中打开」到系统播放器里看。
+
 ### 验证
 
 用 ffmpeg 生成一个**真实的三码率 HLS 流**（`testsrc` 合成画面，不需要素材），再在真实浏览器里驱动：
@@ -301,7 +305,7 @@ pnpm tauri build      # 打包当前平台的安装包
 ```bash
 pnpm dev              # 只启动前端（需要后端命令，无法单独使用）
 cd src-tauri
-cargo test --lib      # 62 个单元测试，不联网
+cargo test --lib      # 116 个单元测试，不联网
 cargo clippy --all-targets
 ```
 
@@ -312,8 +316,19 @@ cargo clippy --all-targets
 ```bash
 pnpm build && cargo build --release --features custom-protocol   # src-tauri/
 pnpm test:native           # 渲染检查 + 后端命令
-SERIOUS_SMOKE_NETWORK=1 pnpm test:native   # 额外导入真实合集并浏览
+
+# 更深的三层，按需叠加：
+SERIOUS_SMOKE_NETWORK=1 pnpm test:native   # 导入真实合集、浏览、校验、更新检查
+SERIOUS_SMOKE_READ=1    pnpm test:native   # 阅读流：字号改动、持久化、目录
+SERIOUS_SMOKE_MEDIA=1   pnpm test:native   # 音乐与视频：真实播放、画质、续播
 ```
+
+`SERIOUS_SMOKE_MEDIA=1` 会起一个本地夹具站点（`scripts/fixture-server.mjs`），提供带
+`<audio>` / `<video>` / 字幕轨道的页面，让**打包后的程序**能真正播起来 —— 浏览器里的测试
+证明不了 Tauri IPC 和打包后的 CSS。
+
+> 这一层不是冗余。上一轮就是靠它抓到两个躲过全部浏览器测试的缺陷：旧格式的
+> `ruleArticles: "body"` 把 101 条链接压成 1 条「文章」，以及切换源时界面停留在上一个源。
 
 产物写在 `test-results/`（已 gitignore）。
 
