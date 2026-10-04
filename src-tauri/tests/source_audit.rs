@@ -99,6 +99,40 @@ impl Bucket {
 
 #[test]
 #[ignore]
+fn checks_a_bare_url_source() {
+    // A bare-URL source is browsed as a link list, so this exercises
+    // `extract_links` against a page that is known to contain many links.
+    let url = env_or("SERIOUS_BARE_URL", "https://www.yck2026.fun/yuedu/rsss/index.html");
+    let src = Source {
+        source_name: "bare".into(),
+        source_url: url.clone(),
+        ..Default::default()
+    };
+    let resp = serious_lib::engine::fetch::fetch_ok(None, &url).expect("fetch failed");
+    println!("fetched {} bytes from {url}", resp.body.len());
+
+    let (items, _) = serious_lib::engine::browse::parse_list(&src, &resp.body, &resp.url);
+    println!("parse_list produced {} item(s)", items.len());
+    for item in items.iter().take(8) {
+        println!("  title={:?} link={:?}", item.title, item.link);
+    }
+
+    // The two passes behind `extract_links` must line up; count them.
+    let doc = serious_lib::engine::selector::Doc::parse(&resp.body);
+    let hrefs = doc.eval("a@href");
+    let titles = doc.eval("a@text");
+    println!("a@href -> {} value(s)", hrefs.len());
+    println!("a@text -> {} value(s)", titles.len());
+    assert!(
+        titles.len() >= hrefs.len() - 2,
+        "title and href passes drifted apart ({} vs {})",
+        titles.len(),
+        hrefs.len(),
+    );
+}
+
+#[test]
+#[ignore]
 fn lists_collections_by_size() {
     // Useful for picking an audit target: the index paginates, so scan a few
     // pages and report the largest collections first.

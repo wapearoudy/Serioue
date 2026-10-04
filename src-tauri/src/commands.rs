@@ -282,6 +282,26 @@ pub async fn load_page(
     Ok(result)
 }
 
+/// Reject a link before it reaches the HTTP client.
+///
+/// reqwest's "builder error" says nothing useful to a reader. Sources do carry
+/// links the client cannot use, and the report should name the problem.
+fn check_url(raw: &str) -> AppResult<()> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::other("没有可打开的地址"));
+    }
+    match url::Url::parse(trimmed) {
+        Ok(u) if matches!(u.scheme(), "http" | "https") => Ok(()),
+        Ok(u) if u.scheme() == "file" => Ok(()),
+        Ok(u) => Err(AppError::other(format!("不支持的链接格式：{}", u.scheme()))),
+        Err(_) => Err(AppError::other(format!(
+            "地址格式有误：{}",
+            trimmed.chars().take(80).collect::<String>()
+        ))),
+    }
+}
+
 #[tauri::command]
 pub async fn load_article(
     state: State<'_, AppState>,
@@ -294,7 +314,9 @@ pub async fn load_article(
         let stored = store
             .source(&id)
             .ok_or_else(|| AppError::NotFound(id.clone()))?;
-        let content = browse::load_article(&stored.source, &url)?;
+        let target = crate::util::absolute_url(url.trim(), &stored.source.source_url);
+        check_url(&target)?;
+        let content = browse::load_article(&stored.source, &target)?;
         store.push_history(HistoryEntry {
             id: String::new(),
             source_id: id.clone(),
@@ -754,6 +776,22 @@ mod tests {
         let large =
             validate_settings(Settings { page_size: 100_000, ..Default::default() }).unwrap();
         assert_eq!(large.page_size, 300);
+    }
+
+    #[test]
+    fn unusable_links_are_rejected_with_a_readable_message() {
+        // reqwest's "builder error" means nothing to a reader.
+        assert!(check_url("https://a.com/x").is_ok());
+        assert!(check_url("http://a.com/x").is_ok());
+
+        let empty = check_url("   ").unwrap_err().to_string();
+        assert!(empty.contains("没有可打开的地址"), "{empty}");
+
+        let scheme = check_url("magnet:?xt=urn:btih:abc").unwrap_err().to_string();
+        assert!(scheme.contains("不支持的链接格式"), "{scheme}");
+
+        let bad = check_url("http://[oops").unwrap_err().to_string();
+        assert!(bad.contains("地址格式有误"), "{bad}");
     }
 
     #[test]

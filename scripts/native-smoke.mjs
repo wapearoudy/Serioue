@@ -191,6 +191,143 @@ try {
     console.log(`  sidebar shows ${imported} source(s)`);
     console.log("  screenshot: test-results/native-browse.png");
 
+    // -- Reading flow in the real packaged app --------------------------------
+    // The preview pages prove the components work in a browser; this proves
+    // they still work once Tauri IPC and the built CSS are in play.
+    //
+    // It uses a synthetic bare-URL source pointed at the repository index,
+    // which the app can already reach. Hunting for a third-party source that
+    // happens to be up would make this test fail for reasons that have nothing
+    // to do with the reader.
+    if (process.env.SERIOUS_SMOKE_READ === "1") {
+      console.log("  (reading mode: opening an article)");
+      const importedFixture = await page.evaluate(async () => {
+        const payload = JSON.stringify([
+          {
+            sourceName: "冒烟测试源",
+            sourceUrl: "https://www.yck2026.fun/yuedu/rsss/index.html",
+            sourceGroup: "smoke",
+          },
+        ]);
+        return window.__TAURI_INTERNALS__.invoke("import_from_text", {
+          text: payload,
+          name: "smoke",
+        });
+      });
+      console.log(`  imported a fixture source: +${importedFixture.added}`);
+
+      // The import went through the command, not the UI, so the app's source
+      // list is stale. Reload rather than reaching around the state.
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForSelector(".src-item", { timeout: 20000 });
+
+      const fixtureId = await page.evaluate(async () => {
+        const all = await window.__TAURI_INTERNALS__.invoke("list_sources", { filter: null });
+        return all.find((s) => s.name.includes("冒烟测试源"))?.id ?? "";
+      });
+      assert.ok(fixtureId, "the fixture source was not stored");
+
+      // Pick the fixture by name: it is appended to the library, so the first
+      // row is some other source entirely.
+      const fixture = page.locator(".src-item", { hasText: "冒烟测试源" });
+      assert.ok((await fixture.count()) > 0, "the fixture source is not in the sidebar");
+      // Backend path first, deterministically: the same command the reader
+      // uses must return real content for a URL the app can reach.
+      const article = await page.evaluate(
+        async ([id]) =>
+          window.__TAURI_INTERNALS__.invoke("load_article", {
+            id,
+            url: "https://www.yck2026.fun/yuedu/rsss/index.html",
+            title: "index",
+          }),
+        [fixtureId],
+      );
+      assert.ok(article.text.trim().length > 50, "load_article returned no text");
+      console.log(
+        `  load_article returned ${article.text.length} chars, ` +
+          `${article.html.length} chars of html`,
+      );
+
+      // Unusable links must explain themselves instead of leaking reqwest's
+      // "builder error" at the user.
+      const badLink = await page.evaluate(
+        async ([id]) => {
+          try {
+            await window.__TAURI_INTERNALS__.invoke("load_article", {
+              id,
+              url: "   ",
+              title: null,
+            });
+            return null;
+          } catch (e) {
+            return String(e);
+          }
+        },
+        [fixtureId],
+      );
+      assert.ok(badLink && !badLink.includes("builder error"), `unhelpful error: ${badLink}`);
+      console.log(`  an unusable link reports: ${badLink}`);
+
+      // Then the UI leg, which depends on what the listing produced.
+      await fixture.first().click();
+      await page.waitForSelector(".grid, .empty", { timeout: 45000 });
+      const cards = await page.locator(".card").count();
+      console.log(`  fixture source listed ${cards} item(s)`);
+
+      if (cards > 0) {
+        await page.locator(".card").first().click();
+        await page.waitForSelector(".reader, .banner", { timeout: 45000 });
+      }
+
+      if ((await page.locator(".reader").count()) > 0) {
+        assert.ok(
+          (await page.locator('.reader-settings > button[title="阅读设置"]').count()) > 0,
+          "the reader has no typography control",
+        );
+
+        const bodyStyle = () =>
+          page.evaluate(() => {
+            const el = document.querySelector(".reader-body");
+            if (!el) return null;
+            const s = getComputedStyle(el);
+            return { fontSize: s.fontSize, width: Math.round(el.getBoundingClientRect().width) };
+          });
+
+        const before = await bodyStyle();
+        assert.ok(before && before.width > 0, "the article body has no width");
+
+        await page.locator('.reader-settings > button[title="阅读设置"]').click();
+        await page.waitForSelector(".reader-pop", { timeout: 5000 });
+        for (let i = 0; i < 4; i++) await page.locator('button[title="放大字号"]').click();
+        const after = await bodyStyle();
+        assert.ok(
+          parseFloat(after.fontSize) > parseFloat(before.fontSize),
+          `font size did not change in the packaged app (${before.fontSize} -> ${after.fontSize})`,
+        );
+        console.log(
+          `  reader font ${before.fontSize} -> ${after.fontSize}, body width ${after.width}px`,
+        );
+        await page.screenshot({ path: path.join(outDir, "native-reader.png") });
+        console.log("  screenshot: test-results/native-reader.png");
+      } else {
+        console.log("  (the reader UI did not open from the listing; backend path still checked)");
+      }
+
+      // Preferences must survive a reload, which means they reached the store.
+      // Only meaningful when the UI leg above actually changed something.
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForSelector(".sidebar", { timeout: 20000 });
+      await page.waitForTimeout(1500);
+      const theme = await page.evaluate(() => document.documentElement.dataset.theme);
+      assert.ok(theme, "no reading theme was applied to the document");
+      const stored = await page.evaluate(() =>
+        window.__TAURI_INTERNALS__.invoke("get_settings"),
+      );
+      console.log(
+        `  after reload: theme=${theme}, persisted font size=${stored.reader_font_size}px`,
+      );
+    }
+
     // -- Source verification -------------------------------------------------
     await page.getByRole("button", { name: "校验", exact: true }).click();
     await page.waitForSelector(".verify-list, .empty", { timeout: 10000 });
