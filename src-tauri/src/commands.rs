@@ -513,6 +513,19 @@ pub async fn clear_history(state: State<'_, AppState>) -> AppResult<()> {
     blocking(move || store.clear_history()).await
 }
 
+/// How far through an article the reader had got.
+#[tauri::command]
+pub async fn get_progress(state: State<'_, AppState>, url: String) -> AppResult<f32> {
+    Ok(state.store.progress(&url).unwrap_or(0.0))
+}
+
+/// Remember a reading position so reopening the article resumes there.
+#[tauri::command]
+pub async fn save_progress(state: State<'_, AppState>, url: String, ratio: f32) -> AppResult<()> {
+    let store = state.store.clone();
+    blocking(move || store.set_progress(&url, ratio)).await
+}
+
 #[tauri::command]
 pub async fn list_collections(state: State<'_, AppState>) -> AppResult<Vec<Collection>> {
     let store = state.store.clone();
@@ -533,7 +546,25 @@ pub async fn get_settings(state: State<'_, AppState>) -> AppResult<Settings> {
 #[tauri::command]
 pub async fn set_settings(state: State<'_, AppState>, settings: Settings) -> AppResult<()> {
     let store = state.store.clone();
-    blocking(move || store.set_settings(settings)).await
+    blocking(move || store.set_settings(validate_settings(settings)?)).await
+}
+
+/// Clamp reader preferences to a range the UI can actually render.
+///
+/// Settings arrive from a text field or a slider, so they are treated as
+/// untrusted input rather than trusted configuration.
+fn validate_settings(mut s: Settings) -> AppResult<Settings> {
+    s.reader_font_size = s.reader_font_size.clamp(13, 30);
+    s.reader_line_height = s.reader_line_height.clamp(120, 240);
+    s.reader_width = s.reader_width.min(1200);
+    if !matches!(s.reader_theme.as_str(), "dark" | "light" | "sepia" | "green") {
+        s.reader_theme = "dark".to_string();
+    }
+    if !matches!(s.reader_font.as_str(), "" | "serif" | "sans") {
+        s.reader_font = String::new();
+    }
+    s.page_size = s.page_size.clamp(10, 300);
+    Ok(s)
 }
 
 #[tauri::command]
@@ -628,6 +659,57 @@ pub async fn current_version(app: tauri::AppHandle) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reader_preferences_are_clamped_to_a_renderable_range() {
+        let v = validate_settings(Settings {
+            reader_font_size: 200,
+            reader_line_height: 5,
+            reader_width: 6000,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(v.reader_font_size, 30);
+        assert_eq!(v.reader_line_height, 120);
+        assert_eq!(v.reader_width, 1200);
+    }
+
+    #[test]
+    fn an_unknown_theme_or_font_falls_back_instead_of_being_stored() {
+        let v = validate_settings(Settings {
+            reader_theme: "neon".into(),
+            reader_font: "comic sans".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(v.reader_theme, "dark");
+        assert!(v.reader_font.is_empty());
+    }
+
+    #[test]
+    fn every_known_theme_and_font_survives_validation() {
+        for theme in ["dark", "light", "sepia", "green"] {
+            let v = validate_settings(Settings {
+                reader_theme: theme.into(),
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(v.reader_theme, theme);
+        }
+        for font in ["", "serif", "sans"] {
+            let v = validate_settings(Settings { reader_font: font.into(), ..Default::default() }).unwrap();
+            assert_eq!(v.reader_font, font);
+        }
+    }
+
+    #[test]
+    fn page_size_is_bounded_too() {
+        let small = validate_settings(Settings { page_size: 0, ..Default::default() }).unwrap();
+        assert_eq!(small.page_size, 10);
+        let large =
+            validate_settings(Settings { page_size: 100_000, ..Default::default() }).unwrap();
+        assert_eq!(large.page_size, 300);
+    }
 
     #[test]
     fn summary_reports_shape() {

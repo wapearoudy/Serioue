@@ -113,6 +113,22 @@ pub struct Settings {
     pub repo_base: String,
     #[serde(default)]
     pub user_agent: String,
+    // --- Reader appearance -------------------------------------------------
+    /// Body text size in px.
+    #[serde(default = "default_font_size")]
+    pub reader_font_size: u8,
+    /// Line height as a percentage of the font size.
+    #[serde(default = "default_line_height")]
+    pub reader_line_height: u8,
+    /// `""` uses the system UI font, `"serif"` and `"sans"` pick a family.
+    #[serde(default)]
+    pub reader_font: String,
+    /// One of `dark`, `light`, `sepia`, `green`.
+    #[serde(default = "default_theme")]
+    pub reader_theme: String,
+    /// Reading column width in px; `0` means full width.
+    #[serde(default)]
+    pub reader_width: u16,
 }
 
 fn default_true() -> bool {
@@ -120,6 +136,15 @@ fn default_true() -> bool {
 }
 fn default_items() -> usize {
     60
+}
+fn default_font_size() -> u8 {
+    17
+}
+fn default_line_height() -> u8 {
+    180
+}
+fn default_theme() -> String {
+    "dark".to_string()
 }
 
 impl Default for Settings {
@@ -130,8 +155,22 @@ impl Default for Settings {
             cache_enabled: false,
             repo_base: "https://www.yck2026.fun".to_string(),
             user_agent: String::new(),
+            reader_font_size: default_font_size(),
+            reader_line_height: default_line_height(),
+            reader_font: String::new(),
+            reader_theme: default_theme(),
+            reader_width: 0,
         }
     }
+}
+
+/// How far through an article the reader had got.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Progress {
+    /// 0.0-1.0 of the scrollable height.
+    pub ratio: f32,
+    #[serde(default)]
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Default)]
@@ -140,6 +179,8 @@ struct Inner {
     collections: Vec<Collection>,
     history: Vec<HistoryEntry>,
     settings: Settings,
+    /// Reading position per article URL.
+    progress: HashMap<String, Progress>,
 }
 
 /// JSON-backed persistence.
@@ -197,6 +238,11 @@ impl Store {
         if let Ok(text) = std::fs::read_to_string(self.path("settings.json")) {
             if let Ok(s) = serde_json::from_str::<Settings>(&text) {
                 inner.settings = s;
+            }
+        }
+        if let Ok(text) = std::fs::read_to_string(self.path("progress.json")) {
+            if let Ok(map) = serde_json::from_str::<HashMap<String, Progress>>(&text) {
+                inner.progress = map;
             }
         }
         Ok(())
@@ -391,7 +437,44 @@ impl Store {
     pub fn clear_history(&self) -> AppResult<()> {
         let mut inner = self.inner.lock().map_err(|_| AppError::Storage("lock poisoned".into()))?;
         inner.history.clear();
+        inner.progress.clear();
         self.write_atomic("history.json", &inner.history)?;
+        self.write_atomic("progress.json", &inner.progress)?;
+        Ok(())
+    }
+
+    /// How far through `url` the reader had got, if it was ever opened.
+    pub fn progress(&self, url: &str) -> Option<f32> {
+        let inner = self.inner.lock().ok()?;
+        inner.progress.get(url).map(|p| p.ratio)
+    }
+
+    /// Remember a reading position.
+    ///
+    /// The ratio is stored rather than a pixel offset on purpose: changing the
+    /// font size or the window height re-lays the page, and only a fraction of
+    /// the scrollable height survives that.
+    pub fn set_progress(&self, url: &str, ratio: f32) -> AppResult<()> {
+        let mut inner = self.inner.lock().map_err(|_| AppError::Storage("lock poisoned".into()))?;
+        let ratio = ratio.clamp(0.0, 1.0);
+        inner.progress.insert(
+            url.to_string(),
+            Progress { ratio, updated_at: chrono::Utc::now().timestamp() },
+        );
+        // Bound growth; a reader rarely returns to hundreds of old articles.
+        if inner.progress.len() > 500 {
+            let mut entries: Vec<(String, i64)> = inner
+                .progress
+                .iter()
+                .map(|(k, v)| (k.clone(), v.updated_at))
+                .collect();
+            entries.sort_by_key(|(_, at)| *at);
+            let drop_n = entries.len().saturating_sub(500);
+            for (url, _) in entries.into_iter().take(drop_n) {
+                inner.progress.remove(&url);
+            }
+        }
+        self.write_atomic("progress.json", &inner.progress)?;
         Ok(())
     }
 
@@ -476,6 +559,57 @@ fn test_dir(tag: &str) -> PathBuf {
 
     fn sample(name: &str, url: &str) -> Source {
         Source { source_name: name.into(), source_url: url.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn reading_progress_round_trips() {
+        let (store, dir) = temp_store();
+        assert_eq!(store.progress("https://x.com/a"), None);
+        store.set_progress("https://x.com/a", 0.42).unwrap();
+        assert_eq!(store.progress("https://x.com/a"), Some(0.42));
+        // A second store over the same directory must see it.
+        let reopened = Store::new(dir.clone()).unwrap();
+        assert_eq!(reopened.progress("https://x.com/a"), Some(0.42));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn reading_progress_is_clamped() {
+        let (store, dir) = temp_store();
+        store.set_progress("https://x.com/a", 5.0).unwrap();
+        assert_eq!(store.progress("https://x.com/a"), Some(1.0));
+        store.set_progress("https://x.com/b", -3.0).unwrap();
+        assert_eq!(store.progress("https://x.com/b"), Some(0.0));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn clearing_history_forgets_reading_positions() {
+        let (store, dir) = temp_store();
+        store.set_progress("https://x.com/a", 0.5).unwrap();
+        store.clear_history().unwrap();
+        assert_eq!(store.progress("https://x.com/a"), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn settings_from_an_older_install_get_reader_defaults() {
+        // A settings.json written before reader preferences existed must still
+        // load, with sensible values rather than zeroes.
+        let dir = test_dir("settings-legacy");
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"concurrent_checks":false,"page_size":30}"#,
+        )
+        .unwrap();
+        let reopened = Store::new(dir.clone()).unwrap();
+        let s = reopened.settings();
+        assert!(!s.concurrent_checks);
+        assert_eq!(s.page_size, 30);
+        assert_eq!(s.reader_font_size, 17);
+        assert_eq!(s.reader_line_height, 180);
+        assert_eq!(s.reader_theme, "dark");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

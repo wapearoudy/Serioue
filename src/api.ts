@@ -119,6 +119,15 @@ export interface Settings {
   cache_enabled: boolean;
   repo_base: string;
   user_agent: string;
+  // --- Reader appearance ---
+  reader_font_size: number;
+  reader_line_height: number;
+  /** "" = system font, "serif", "sans". */
+  reader_font: string;
+  /** "dark" | "light" | "sepia" | "green". */
+  reader_theme: string;
+  /** Column width in px; 0 means full width. */
+  reader_width: number;
 }
 
 export interface Stats {
@@ -235,6 +244,12 @@ export const api = {
   listHistory: (limit?: number) => invoke<HistoryEntry[]>("list_history", { limit: limit ?? null }),
 
   clearHistory: () => invoke<void>("clear_history"),
+
+  /** How far through an article the reader had got (0-1). */
+  getProgress: (url: string) => invoke<number>("get_progress", { url }),
+
+  saveProgress: (url: string, ratio: number) =>
+    invoke<void>("save_progress", { url, ratio }),
 
   listCollections: () => invoke<Collection[]>("list_collections"),
 

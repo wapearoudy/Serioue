@@ -1,8 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../api";
 import { Gallery, VideoPlayer, extractImages, isPlayable, sanitize } from "./media";
 import { MusicPlayer, extractAudio, isAudioUrl, type Track } from "./MusicPlayer";
+import { ReaderSettings } from "./ReaderSettings";
 import { Banner, Spinner } from "./ui";
-import type { ArticleResponse } from "../api";
+import type { ArticleResponse, Settings } from "../api";
 
 type Props = {
   loading: boolean;
@@ -11,6 +13,10 @@ type Props = {
   sourceName: string;
   /** The list entry that was opened, used to title tracks and pick a start. */
   itemKind?: string;
+  /** The URL to remember a reading position against. */
+  articleUrl?: string;
+  settings: Settings | null;
+  onSettingsChange: (patch: Partial<Settings>) => void;
   onBack: () => void;
   onOpenExternal: (url: string) => void;
 };
@@ -21,10 +27,17 @@ export function Reader({
   article,
   sourceName,
   itemKind,
+  articleUrl,
+  settings,
+  onSettingsChange,
   onBack,
   onOpenExternal,
 }: Props) {
   const [mode, setMode] = useState<"auto" | "text" | "rich">("auto");
+  const body = useRef<HTMLDivElement>(null);
+  const [progress, setProgress] = useState(0);
+  const restored = useRef<string | null>(null);
+  const savedAt = useRef(0);
 
   const view = useMemo(() => {
     if (!article) return null;
@@ -72,6 +85,66 @@ export function Reader({
     return { rich, video, images, text, rendered, tracks };
   }, [article, mode, itemKind]);
 
+  // How far down the readable area the user is.
+  const readRatio = () => {
+    const el = body.current;
+    if (!el) return 0;
+    const scrollable = el.scrollHeight - el.clientHeight;
+    if (scrollable <= 1) return 0;
+    const value = el.scrollTop / scrollable;
+    return Math.max(0, Math.min(1, value));
+  };
+
+  // Restore the remembered position once per article.
+  useEffect(() => {
+    const url = articleUrl;
+    if (!url || !article || restored.current === url) return;
+    restored.current = url;
+    let cancelled = false;
+    api
+      .getProgress(url)
+      .then((ratio) => {
+        if (cancelled || ratio <= 0.01) return;
+        // Wait for the layout to settle, or the scroll lands in the wrong place.
+        requestAnimationFrame(() => {
+          const el = body.current;
+          if (!el) return;
+          el.scrollTop = (el.scrollHeight - el.clientHeight) * ratio;
+          setProgress(ratio);
+        });
+      })
+      .catch(() => {
+        /* no stored position for this article */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [article, articleUrl]);
+
+  // Save while scrolling, throttled, and once more when leaving.
+  useEffect(() => {
+    const el = body.current;
+    if (!el || !articleUrl || !article) return;
+
+    const persist = (force: boolean) => {
+      const now = Date.now();
+      if (!force && now - savedAt.current < 1200) return;
+      savedAt.current = now;
+      const ratio = readRatio();
+      setProgress(ratio);
+      api.saveProgress(articleUrl, ratio).catch(() => {
+        /* losing a position is not worth interrupting the reader */
+      });
+    };
+
+    const onScroll = () => persist(false);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      persist(true);
+    };
+  }, [article, articleUrl]);
+
   return (
     <>
       <div className="main-head">
@@ -102,6 +175,7 @@ export function Reader({
             </button>
           </div>
         )}
+        <ReaderSettings settings={settings} onChange={onSettingsChange} />
         {article && (
           <button onClick={() => onOpenExternal(article.final_url)} title="在浏览器中打开">
             ↗
@@ -109,7 +183,7 @@ export function Reader({
         )}
       </div>
 
-      <div className="main-body">
+      <div className="main-body reader-scroll" ref={body}>
         {error && <Banner text={error} />}
         {loading && (
           <div style={{ display: "flex", justifyContent: "center", padding: 60 }}>
@@ -124,7 +198,10 @@ export function Reader({
               {sourceName}
               {view.tracks.length > 0 && ` · ${view.tracks.length} 首`}
               {article!.media.length > 0 && view.tracks.length === 0 && ` · ${article!.media.length} 个媒体资源`}
+              {progress > 0.02 && ` · 已读 ${Math.round(progress * 100)}%`}
             </div>
+
+            <div className={`reader-body${settings?.reader_font === "serif" ? " serif" : ""}`}>
 
             {view.rendered === "music" && (
               <MusicPlayer tracks={view.tracks} title={sourceName} />
@@ -137,7 +214,7 @@ export function Reader({
             {view.rendered === "gallery" && <Gallery images={view.images} />}
 
             {view.rendered === "text" && (
-              <div className="reader-body">
+              <div>
                 {view.text ? (
                   <p style={{ whiteSpace: "pre-wrap" }}>{view.text}</p>
                 ) : (
@@ -148,7 +225,7 @@ export function Reader({
 
             {(view.rendered === "rich" || view.rendered === "video") && (
               <div
-                className="reader-body"
+                className="reader-rich"
                 dangerouslySetInnerHTML={{ __html: view.rich }}
               />
             )}
@@ -158,6 +235,7 @@ export function Reader({
                 <button onClick={() => setMode("text")}>查看纯文本</button>
               </div>
             )}
+            </div>
           </article>
         )}
       </div>

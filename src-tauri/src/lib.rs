@@ -52,6 +52,8 @@ pub fn run() {
             commands::cancel_check,
             commands::list_history,
             commands::clear_history,
+            commands::get_progress,
+            commands::save_progress,
             commands::list_collections,
             commands::remove_collection,
             commands::get_settings,

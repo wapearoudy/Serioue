@@ -14,7 +14,8 @@
     "check": "tsc --noEmit",
     "test:native": "node scripts/native-smoke.mjs",
     "demo:audio": "node scripts/make-demo-audio.mjs",
-    "test:music": "node scripts/music-player-test.mjs"
+    "test:music": "node scripts/music-player-test.mjs",
+    "test:reader": "node scripts/reader-test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -9,6 +9,8 @@ import { Sidebar, sourceMeta } from "./components/Sidebar";
 import { UpdateBanner } from "./components/Update";
 import { VerifyPanel } from "./components/VerifyPanel";
 import { Banner, Empty } from "./components/ui";
+import { applyReaderSettings } from "./components/ReaderSettings";
+import type { Settings } from "./api";
 
 type View =
   | { kind: "list" }
@@ -34,6 +36,30 @@ export default function App() {
   const [articleError, setArticleError] = useState<string | null>(null);
   /** The list entry's kind, so the reader can pick the right presentation. */
   const [articleKind, setArticleKind] = useState<string | null>(null);
+  const [settings, setSettings] = useState<Settings | null>(null);
+
+  // Reader preferences drive CSS variables and the reading theme, so they are
+  // loaded once at startup rather than when the reader first opens.
+  useEffect(() => {
+    api
+      .getSettings()
+      .then((s) => {
+        setSettings(s);
+        applyReaderSettings(s);
+      })
+      .catch((e) => setError(errorMessage(e)));
+  }, []);
+
+  const changeSettings = useCallback((patch: Partial<Settings>) => {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev, ...patch };
+      applyReaderSettings(next);
+      // Persist in the background; a failed write must not block reading.
+      api.setSettings(next).catch(() => {});
+      return next;
+    });
+  }, []);
 
   // Auto-update: the backend checks on startup and emits when one is found.
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -199,6 +225,9 @@ export default function App() {
             article={article}
             sourceName={selected?.name ?? ""}
             itemKind={articleKind ?? undefined}
+            articleUrl={article?.final_url || undefined}
+            settings={settings}
+            onSettingsChange={changeSettings}
             onBack={() => setView({ kind: "list" })}
             onOpenExternal={(url) => window.open(url, "_blank")}
           />

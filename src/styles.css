@@ -14,11 +14,73 @@
   --radius: 8px;
   --sidebar-w: 300px;
 
+  /* Reading surface. Overridden by the theme classes below and driven by the
+     reader preferences, so the typography controls have a single source. */
+  --reader-size: 17px;
+  --reader-line: 1.8;
+  /* Reading column limit. "none" means full width — a `0px` here would
+     collapse the article to zero width and hide every line of text. */
+  --reader-measure: none;
+  --reader-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+
   color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   font-size: 14px;
   line-height: 1.6;
+}
+
+/* --- Reading themes -------------------------------------------------------
+   Applied to <html> so the whole surface changes, the way a reader expects,
+   rather than only the article column. */
+
+html[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-elevated: #f6f7f9;
+  --bg-hover: #eceef2;
+  --border: #e1e4e9;
+  --text: #1c1f24;
+  --text-dim: #5c6370;
+  --text-faint: #8b93a1;
+  color-scheme: light;
+}
+
+html[data-theme="sepia"] {
+  --bg: #f4ecd8;
+  --bg-elevated: #ece1c6;
+  --bg-hover: #e3d6b6;
+  --border: #ded0ae;
+  --text: #4a3f2c;
+  --text-dim: #7a6b52;
+  --text-faint: #a1907a;
+  color-scheme: light;
+}
+
+html[data-theme="green"] {
+  --bg: #e4efe0;
+  --bg-elevated: #d7e7d2;
+  --bg-hover: #cadfc4;
+  --border: #bfd8b8;
+  --text: #2f4530;
+  --text-dim: #566f55;
+  --text-faint: #82a080;
+  color-scheme: light;
+}
+
+html[data-theme="sepia"] {
+  --accent: #b07d3a;
+  --accent-dim: #8c6230;
+}
+
+html[data-theme="green"] {
+  --accent: #3f7d47;
+  --accent-dim: #33603a;
+}
+
+html[data-theme="light"] {
+  --accent: #2f6fd0;
+  --accent-dim: #245ba8;
 }
 
 * {
@@ -493,11 +555,117 @@ select:focus {
 }
 
 .reader-body {
-  font-size: 15.5px;
-  line-height: 1.85;
+  font-size: var(--reader-size);
+  line-height: var(--reader-line);
+  font-family: var(--reader-font);
+  max-width: var(--reader-measure);
   word-wrap: break-word;
 }
 
+/* The reading column scrolls on its own so a saved position survives the
+   header and sidebar being a different height. */
+.reader-scroll {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.reader-settings {
+  position: relative;
+}
+
+.reader-settings > button {
+  min-width: 40px;
+  font-weight: 600;
+}
+
+.reader-settings > button.on {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.reader-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 50;
+  width: 236px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.36);
+}
+
+.reader-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.reader-pop-row button {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+.reader-pop-row button.on {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: var(--bg-hover);
+}
+
+.reader-pop-value {
+  min-width: 46px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.reader-pop-label {
+  font-size: 12px;
+  color: var(--text-faint);
+  width: 28px;
+  flex-shrink: 0;
+}
+
+/* CJK text reads better with the lines flush to both margins; Latin text looks
+   ragged, so justification is opt-in per font choice. */
+.reader-body.serif {
+  --reader-font: "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", Georgia,
+    "Times New Roman", serif;
+}
+
+.reader-body.justified p {
+  text-align: justify;
+  text-justify: inter-ideograph;
+}
+
+.reader-body p {
+  margin: 0 0 1.05em;
+}
+
+.reader-body h1 {
+  font-size: 1.5em;
+}
+
+.reader-body h2,
+.reader-body h3 {
+  font-size: 1.22em;
+}
+
+.reader-rich {
+  font-size: var(--reader-size);
+  line-height: var(--reader-line);
+  font-family: var(--reader-font);
+  max-width: var(--reader-measure);
+  word-wrap: break-word;
+}
+
+.reader-rich img,
 .reader-body img {
   max-width: 100%;
   border-radius: 8px;
