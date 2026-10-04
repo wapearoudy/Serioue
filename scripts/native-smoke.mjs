@@ -380,6 +380,111 @@ try {
       );
     }
 
+    // -- Categories and search in the packaged app ---------------------------
+    if (fixtureBase) {
+      console.log("  (categories and search)");
+      const catId = await page.evaluate(
+        async ([base]) => {
+          const source = {
+            sourceName: "分类夹具",
+            sourceUrl: `${base}/category.html?c=%E5%9B%BD%E4%BA%A7`,
+            sourceGroup: "smoke",
+            sortUrl: `国产::${base}/category.html?c=%E5%9B%BD%E4%BA%A7\n欧美::${base}/category.html?c=E7%BE%8E%E6%AC%A7`,
+            searchUrl: `${base}/search.html?q={{keyWord}}`,
+          };
+          await window.__TAURI_INTERNALS__.invoke("import_from_text", {
+            text: JSON.stringify([source]),
+            name: "smoke",
+          });
+          const all = await window.__TAURI_INTERNALS__.invoke("list_sources", { filter: null });
+          return all.find((s) => s.name === "分类夹具")?.id ?? "";
+        },
+        [fixtureBase],
+      );
+      assert.ok(catId, "the category fixture was not stored");
+
+      // Categories come from the command, not from the source's bare URL.
+      const cats = await page.evaluate(
+        async ([id]) => window.__TAURI_INTERNALS__.invoke("categories", { id }),
+        [catId],
+      );
+      assert.equal(cats.categories.length, 2, `expected 2 categories, got ${cats.categories.length}`);
+      console.log(`  categories parsed: ${cats.categories.map((c) => c.name).join(", ")}`);
+
+      const perCat = await page.evaluate(
+        async ([id, cats]) => {
+          const out = [];
+          for (const c of cats) {
+            const page = await window.__TAURI_INTERNALS__.invoke("load_page", {
+              args: { id, url: c.url, page: 1, next: null },
+            });
+            out.push({ name: c.name, count: page.items.length });
+          }
+          return out;
+        },
+        [catId, cats.categories],
+      );
+      for (const c of perCat) {
+        assert.ok(c.count > 0, `category "${c.name}" listed nothing`);
+      }
+      console.log(`  per-category listing: ${perCat.map((c) => `${c.name}=${c.count}`).join(", ")}`);
+
+      // Search must reach the declared searchUrl.
+      const found = await page.evaluate(
+        async ([id]) => window.__TAURI_INTERNALS__.invoke("search_source", { id, keyword: "测试" }),
+        [catId],
+      );
+      assert.ok(found.items.length > 0, `search returned nothing (${found.items.length})`);
+      console.log(`  search returned ${found.items.length} item(s)`);
+
+      // The regression this guards: switching sources must land on the new
+      // source's first category, not silently on whatever index carried over.
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForSelector(".src-item", { timeout: 20000 });
+      await page.locator(".src-item", { hasText: "分类夹具" }).first().click();
+      await page.waitForSelector(".cat-bar", { timeout: 30000 });
+
+      const second = page.locator(".cat-bar .cat").nth(1);
+      await second.click();
+      await page.waitForFunction(
+        () => document.querySelectorAll(".cat-bar .cat")[1]?.classList.contains("active"),
+        null,
+        { timeout: 10000 },
+      );
+      const inSecond = (await page.locator(".main-title").first().innerText()).replace(/\s+/g, " ");
+      console.log(`  selected the second category: "${inSecond}"`);
+
+      // Now switch to a source that has only one category.
+      await page.evaluate(
+        async ([base]) => {
+          await window.__TAURI_INTERNALS__.invoke("import_from_text", {
+            text: JSON.stringify([
+              { sourceName: "单分类夹具", sourceUrl: `${base}/article.html`, sourceGroup: "smoke" },
+            ]),
+            name: "smoke",
+          });
+        },
+        [fixtureBase],
+      );
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForSelector(".src-item", { timeout: 20000 });
+      await page.locator(".src-item", { hasText: "单分类夹具" }).first().click();
+      await page.waitForSelector(".grid .card, .reader-body", { timeout: 30000 });
+      const hasCatBar = (await page.locator(".cat-bar").count()) > 0;
+      console.log(`  after switching to a single-category source, category bar: ${hasCatBar}`);
+      assert.ok(!hasCatBar, "a one-category source should not show a category bar");
+
+      // Going back must start at the first category again.
+      await page.locator(".src-item", { hasText: "分类夹具" }).first().click();
+      await page.waitForSelector(".cat-bar", { timeout: 30000 });
+      await page.waitForFunction(
+        () => document.querySelectorAll(".cat-bar .cat")[0]?.classList.contains("active"),
+        null,
+        { timeout: 10000 },
+      );
+      console.log("  returning to the two-category source starts on its first category");
+    }
+
     // -- Music and video in the packaged app ---------------------------------
     // These paths had only ever been covered by browser tests; two real bugs
     // last round hid behind that gap.

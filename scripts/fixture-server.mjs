@@ -56,6 +56,28 @@ function videoPage(base) {
 </body></html>`;
 }
 
+/** A page of links under a given heading, for category testing. */
+function categoryPage(heading, count) {
+  const links = Array.from(
+    { length: count },
+    (_v, i) => `<li><a href="/category.html?c=${encodeURIComponent(heading)}&n=${i + 1}">${heading} 第 ${i + 1} 条</a></li>`,
+  ).join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${heading}</title></head>
+<body><h1>${heading}</h1><ul>${links}</ul>
+<p><a href="/category.html?c=${encodeURIComponent(heading)}&n=99">更多 ${heading}</a></p>
+</body></html>`;
+}
+
+/** What the source's search endpoint returns. */
+function searchPage(query) {
+  const links = Array.from(
+    { length: 3 },
+    (_v, i) => `<li><a href="/search.html?q=${encodeURIComponent(query)}&n=${i + 1}">命中 ${i + 1}</a></li>`,
+  ).join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><title>搜索 ${query}</title></head>
+<body><h1>搜索「${query}」</h1><ul>${links}</ul></body></html>`;
+}
+
 /** A plain article, for the reading path. */
 function articlePage() {
   const paras = Array.from(
@@ -79,11 +101,21 @@ const server = createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "*");
 
-  const html = {
-    "/music.html": musicPage(host),
-    "/video.html": videoPage(host),
-    "/article.html": articlePage(),
-  }[path_];
+  const query = url.searchParams;
+  const dynamic =
+    path_ === "/category.html"
+      ? categoryPage(query.get("c") || "分类", 5)
+      : path_ === "/search.html"
+        ? searchPage(query.get("q") || "测试")
+        : null;
+
+  const html =
+    dynamic ??
+    {
+      "/music.html": musicPage(host),
+      "/video.html": videoPage(host),
+      "/article.html": articlePage(),
+    }[path_];
 
   if (html) {
     res.writeHead(200, { "Content-Type": TYPES[".html"] });

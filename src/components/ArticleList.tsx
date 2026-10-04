@@ -35,6 +35,20 @@ export function ArticleList({
   const sentinel = useRef<HTMLDivElement>(null);
   const category = categories[catIndex];
 
+  // Switching sources must start from their first category. The previous index
+  // can point past the end of a shorter list, and an out-of-range index falls
+  // back to the site root — so the user would silently get the homepage of the
+  // new source instead of the category tab they could actually see.
+  useEffect(() => {
+    setCatIndex(0);
+    setKeyword("");
+  }, [sourceId]);
+
+  // Clamp when the category list shrinks underneath us.
+  useEffect(() => {
+    setCatIndex((i) => Math.min(i, Math.max(0, categories.length - 1)));
+  }, [categories.length]);
+
   // Load the first page whenever the source or category changes.
   //
   // `categoryUrl` is in the dependencies on purpose. The parent fetches the

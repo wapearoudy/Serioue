@@ -14,7 +14,7 @@
 | 功能 | 说明 |
 | --- | --- |
 | 合集导入 | 从源仓库浏览 90+ 共享合集，一键导入；也支持粘贴 JSON 地址或拖入 JSON 文件 |
-| 分类目录 | 自动解析源的 `sortUrl`，渲染成分类标签页（如「国产 / 欧美 / 福利」） |
+| 分类目录 | 自动解析源的 `sortUrl`，渲染成分类标签页（如「国产 / 欧美 / 福利」）；切换源时回到第一个分类 |
 | 文章列表 | 按源规则解析列表，支持分页与无限滚动 |
 | 视频播放 | HLS (`.m3u8`) 在 Windows 上也能播 —— 内置 hls.js，Safari 走原生；多码率可切画质、可调倍速 |
 | 阅读器 | 视频源 → 播放器；图集 → 可缩放画廊；音乐 → 队列式播放器；其他 → 原文或纯文本 |
@@ -320,12 +320,12 @@ pnpm test:native           # 渲染检查 + 后端命令
 # 更深的三层，按需叠加：
 SERIOUS_SMOKE_NETWORK=1 pnpm test:native   # 导入真实合集、浏览、校验、更新检查
 SERIOUS_SMOKE_READ=1    pnpm test:native   # 阅读流：字号改动、持久化、目录
-SERIOUS_SMOKE_MEDIA=1   pnpm test:native   # 音乐与视频：真实播放、画质、续播
+SERIOUS_SMOKE_MEDIA=1   pnpm test:native   # 分类、搜索、音乐、视频：真实播放、画质、续播
 ```
 
 `SERIOUS_SMOKE_MEDIA=1` 会起一个本地夹具站点（`scripts/fixture-server.mjs`），提供带
-`<audio>` / `<video>` / 字幕轨道的页面，让**打包后的程序**能真正播起来 —— 浏览器里的测试
-证明不了 Tauri IPC 和打包后的 CSS。
+`<audio>` / `<video>` / 字幕轨道的页面、多分类源和搜索结果页，让**打包后的程序**能真正跑起来 ——
+浏览器里的测试证明不了 Tauri IPC 和打包后的 CSS。
 
 > 这一层不是冗余。上一轮就是靠它抓到两个躲过全部浏览器测试的缺陷：旧格式的
 > `ruleArticles: "body"` 把 101 条链接压成 1 条「文章」，以及切换源时界面停留在上一个源。
