@@ -65,6 +65,11 @@ pub enum Step {
     Parent,
     /// Descendant selection, e.g. `img` or `class.x` mid-chain.
     Select(String),
+    /// Legado's "the element whose text is this" step, e.g. `text.一键导入`.
+    ///
+    /// Without this the token falls through to `Attr` and silently matches
+    /// nothing, which looks like a dead source rather than an unsupported rule.
+    TextMatch(String),
     /// Attribute extraction (terminal).
     Attr(String),
     Text,
@@ -98,6 +103,12 @@ fn classify(step: &str) -> Step {
             // A leading `tag.`, `id.` or `class.` is a descendant selection.
             if step.starts_with("tag.") || step.starts_with("id.") || step.starts_with("class.") {
                 return Step::Select(step.to_string());
+            }
+            // `text.<value>` locates an element by its visible text. It must be
+            // checked before the attribute fallback, or it is read as an
+            // attribute name and silently matches nothing.
+            if let Some(want) = step.strip_prefix("text.") {
+                return Step::TextMatch(want.to_string());
             }
             if is_tag_token(step) {
                 return Step::Select(step.to_string());
@@ -263,6 +274,15 @@ fn resolve_path<'a>(root: &ElementRef<'a>, path: &[usize]) -> Option<ElementRef<
         cur = cur.child_elements().nth(*i)?;
     }
     Some(cur)
+}
+
+/// Whether `target` appears anywhere under `node`.
+fn has_descendant(node: &ElementRef<'_>, target: ElementRef<'_>) -> bool {
+    if let Some(sel) = cached_selector("*") {
+        node.select(sel.as_ref()).any(|d| ptr_eq(&d, &target))
+    } else {
+        false
+    }
 }
 
 fn navigate<'a>(root: &ElementRef<'a>, node: &ElementRef<'a>, step: &Step) -> Option<ElementRef<'a>> {
@@ -589,6 +609,49 @@ impl Doc {
                     current = select_within(&current, sel);
                     i += 1;
                 }
+                Step::TextMatch(want) => {
+                    // `text.<value>` should yield the element whose text *is*
+                    // that value, not every ancestor that happens to contain
+                    // it. Searching descendants and preferring an exact match is
+                    // what keeps `li@text.一键导入` returning the button rather
+                    // than the whole list item.
+                    let needle = want.trim();
+                    let text_of = |e: &ElementRef<'a>| clean(&e.text().collect::<String>());
+
+                    let exact_in = |nodes: &[ElementRef<'a>]| -> Vec<ElementRef<'a>> {
+                        nodes.iter().copied().filter(|e| text_of(e) == needle).collect()
+                    };
+
+                    let mut hit = exact_in(&current);
+                    if hit.is_empty() {
+                        let mut pool = current.clone();
+                        for e in &current {
+                            if let Some(sel) = cached_selector("*") {
+                                pool.extend(e.select(sel.as_ref()));
+                            }
+                        }
+                        hit = exact_in(&pool);
+                    }
+                    if hit.is_empty() {
+                        // No exact text anywhere: accept "contains", then keep
+                        // only the deepest matches so ancestors drop out.
+                        let mut pool = current.clone();
+                        for e in &current {
+                            if let Some(sel) = cached_selector("*") {
+                                pool.extend(e.select(sel.as_ref()));
+                            }
+                        }
+                        let contains: Vec<ElementRef<'a>> =
+                            pool.iter().copied().filter(|e| text_of(e).contains(needle)).collect();
+                        hit = contains
+                            .iter()
+                            .copied()
+                            .filter(|e| !contains.iter().any(|o| ptr_eq(e, o) && has_descendant(e, *o)))
+                            .collect();
+                    }
+                    current = hit;
+                    i += 1;
+                }
                 Step::Attr(a) => {
                     return (current, Extract::Attr(a.clone()));
                 }
@@ -773,6 +836,39 @@ mod tests {
     #[test]
     fn extracts_attribute() {
         assert_eq!(doc().eval("class.item@a@href"), vec!["/p/1", "/p/2", "/p/3"]);
+    }
+
+    #[test]
+    fn matches_an_element_by_its_text() {
+        // Legado's `text.<value>` step: used to locate the "一键导入" button
+        // on bookmark pages. Without it the token was read as an attribute name
+        // and matched nothing.
+        let doc = Doc::parse(
+            r#"<ul><li><a href="/a">A</a><em>一键导入</em></li>
+                <li><a href="/b">B</a><em>普通链接</em></li></ul>"#,
+        );
+        let hits = doc.eval("li@all@text.一键导入");
+        assert_eq!(hits, vec!["一键导入"], "{hits:?}");
+    }
+
+    #[test]
+    fn text_match_falls_back_to_contains() {
+        let doc = Doc::parse(r#"<div><span>▶ 播放 全集</span></div>"#);
+        let hits = doc.eval("span@text.播放");
+        assert_eq!(hits, vec!["▶ 播放 全集"], "{hits:?}");
+    }
+
+    #[test]
+    fn text_match_can_still_take_an_attribute() {
+        let doc = Doc::parse(r#"<li><a href="/x">名称</a><b onclick="importApp(1)">一键导入</b></li>"#);
+        let hits = doc.eval("li@text.一键导入@onclick");
+        assert_eq!(hits, vec!["importApp(1)"], "{hits:?}");
+    }
+
+    #[test]
+    fn a_text_match_that_matches_nothing_returns_nothing() {
+        let doc = Doc::parse(r#"<div><span>别的</span></div>"#);
+        assert!(doc.eval("span@text.没有这个").is_empty());
     }
 
     #[test]

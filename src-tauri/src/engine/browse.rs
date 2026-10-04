@@ -130,6 +130,33 @@ fn link_path(link: &str) -> String {
     parsed.to_lowercase()
 }
 
+/// Could this extracted value plausibly be a URL?
+///
+/// A rule such as `text.一键导入@onclick` yields a JavaScript call like
+/// `importApp(1)`. Turning that into a link produces an item the reader can
+/// never open, and the report then blames the site instead of the rule.
+fn looks_like_link(value: &str) -> bool {
+    let v = value.trim();
+    if v.is_empty() || v.len() > 2000 {
+        return false;
+    }
+    // A call, a snippet of markup or a phrase is not an address.
+    if v.contains(char::is_whitespace) || v.contains('(') || v.contains(')') || v.contains('<') {
+        return false;
+    }
+    let lower = v.to_lowercase();
+    if lower.starts_with("javascript:") || lower.starts_with("data:") {
+        return false;
+    }
+    v.starts_with("http://")
+        || v.starts_with("https://")
+        || v.starts_with("//")
+        || v.starts_with('/')
+        || v.starts_with("./")
+        || v.starts_with("../")
+        || v.contains('.')
+}
+
 /// Classify an item so the UI can offer the right affordance.
 fn classify(title: &str, image: &str, link: &str) -> String {
     let path = link_path(link);
@@ -250,7 +277,11 @@ pub fn parse_list(src: &Source, body: &str, base_url: &str) -> (Vec<ArticleItem>
         if title.is_empty() && link.is_empty() && image.is_empty() {
             continue;
         }
-        let link = absolute_url(&link, base_url);
+        let link = if looks_like_link(&link) {
+            absolute_url(&link, base_url)
+        } else {
+            String::new()
+        };
         let image = absolute_url(&image, base_url);
 
         items.push(ArticleItem {
@@ -794,6 +825,19 @@ mod tests {
         let (items, _) = parse_list(&src, body, "https://api.x.com");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "默认名");
+    }
+
+    #[test]
+    fn a_javascript_call_is_not_treated_as_a_link() {
+        // `text.一键导入@onclick` yields a JS call; turning it into a link
+        // produces an item the reader can never open.
+        assert!(!looks_like_link("importApp(1)"));
+        assert!(!looks_like_link("javascript:void(0)"));
+        assert!(!looks_like_link(""));
+        assert!(!looks_like_link("hello world"));
+        assert!(looks_like_link("/a/b.html"));
+        assert!(looks_like_link("https://x.com/a"));
+        assert!(looks_like_link("//cdn.x.com/a.mp3"));
     }
 
     #[test]

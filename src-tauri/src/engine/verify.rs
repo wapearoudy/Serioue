@@ -367,7 +367,15 @@ fn probe_list(src: &Source) -> (StageResult, Vec<ArticleItem>) {
     let with_link = items.iter().filter(|i| !i.link.trim().is_empty()).count();
     let first = crate::util::short_url(items[0].title.trim(), 24);
     let (state, detail) = if with_link == 0 {
-        (StageState::Warn, format!("解析出 {} 条，但都没有链接，正文无法打开", items.len()))
+        // Naming the rule that produced no address is the difference between a
+        // dead site and a source whose link rule the engine cannot use.
+        let rule = crate::util::short_url(src.rule_link.trim(), 40);
+        let because = if rule.trim().is_empty() {
+            "该源没有配置链接规则 ruleLink".to_string()
+        } else {
+            format!("链接规则「{rule}」没有取到地址")
+        };
+        (StageState::Warn, format!("解析出 {} 条，但都没有链接（{because}）", items.len()))
     } else {
         (StageState::Ok, format!("解析出 {} 条 · 首条: {first}", items.len()))
     };
