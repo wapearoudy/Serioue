@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage, events, type ArticleItem, type ArticleResponse, type Category, type HistoryEntry, type SourceSummary, type Stats, type UpdateInfo } from "./api";
 import { ArticleList } from "./components/ArticleList";
 import { HistoryPanel } from "./components/HistoryPanel";
@@ -38,6 +38,9 @@ export default function App() {
   const [articleKind, setArticleKind] = useState<string | null>(null);
   /** The list the reader opened from, used for the table of contents. */
   const [siblings, setSiblings] = useState<ArticleItem[]>([]);
+  /** Sequence guards: only the newest request may write these. */
+  const articleSeq = useRef(0);
+  const siblingsSeq = useRef(0);
   const [settings, setSettings] = useState<Settings | null>(null);
   /** Bumped whenever a reading position moves, so the sidebar can refresh. */
   const [progressToken, setProgressToken] = useState(0);
@@ -131,6 +134,9 @@ export default function App() {
    * could offer the previous source's chapters.
    */
   function selectSource(id: string) {
+    // Anything still in flight belongs to the source we are leaving.
+    articleSeq.current += 1;
+    siblingsSeq.current += 1;
     setSelectedId(id);
     setView({ kind: "list" });
     setArticle(null);
@@ -145,18 +151,25 @@ export default function App() {
    * *previous* source's list in place, and the contents would offer the
    * chapters of a different book. Failing to load one is not an error — the
    * article still opens, it just has no chapter navigation.
+   *
+   * The sequence guard is what makes "the newest request wins" true: opening
+   * two articles in quick succession would otherwise let whichever response
+   * arrived last decide what the reader shows.
    */
   async function loadSiblingsFor(sourceId: string) {
+    const seq = ++siblingsSeq.current;
     try {
       const page = await api.loadPage({ id: sourceId, url: null, page: 1 });
+      if (seq !== siblingsSeq.current) return;
       setSiblings(page.items ?? []);
     } catch {
-      setSiblings([]);
+      if (seq === siblingsSeq.current) setSiblings([]);
     }
   }
 
   async function openArticle(item: ArticleItem) {
     if (!selectedId) return;
+    const seq = ++articleSeq.current;
     setView({ kind: "reader", item });
     setArticleKind(item.kind);
     setArticleLoading(true);
@@ -165,15 +178,19 @@ export default function App() {
     void loadSiblingsFor(selectedId);
     try {
       const res = await api.loadArticle(selectedId, item.link, item.title);
+      if (seq !== articleSeq.current) return;
       setArticle(res);
     } catch (e) {
+      if (seq !== articleSeq.current) return;
       setArticleError(errorMessage(e));
     } finally {
-      setArticleLoading(false);
+      // Only the newest request may clear the spinner.
+      if (seq === articleSeq.current) setArticleLoading(false);
     }
   }
 
   function openHistoryEntry(entry: HistoryEntry) {
+    const seq = ++articleSeq.current;
     setView({ kind: "reader", item: { title: entry.title, link: entry.url, image: "", date: "", kind: "article" } });
     setArticleKind("article");
     setArticleLoading(true);
@@ -183,9 +200,15 @@ export default function App() {
     // History rows may belong to a source that is no longer selected.
     api
       .loadArticle(entry.source_id, entry.url, entry.title)
-      .then(setArticle)
-      .catch((e) => setArticleError(errorMessage(e)))
-      .finally(() => setArticleLoading(false));
+      .then((res) => {
+        if (seq === articleSeq.current) setArticle(res);
+      })
+      .catch((e) => {
+        if (seq === articleSeq.current) setArticleError(errorMessage(e));
+      })
+      .finally(() => {
+        if (seq === articleSeq.current) setArticleLoading(false);
+      });
   }
 
   const selected = sources.find((s) => s.id === selectedId) ?? null;

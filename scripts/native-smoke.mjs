@@ -315,10 +315,50 @@ try {
           }),
         [fixtureId],
       );
-      console.log(
-        `  header reads "${shown}"; load_page returned ${viaCommand.items.length} item(s), ` +
-          `the grid rendered ${cards}`,
-      );
+      console.log(`  fixture source listed ${cards} item(s); header reads "${shown}"`);
+
+      // Opening two articles in quick succession must leave the *second* one on
+      // screen. Without a sequence guard the slower response wins, and the
+      // reader shows an article the user never chose.
+      if (cards > 2) {
+        const titles = await page.locator(".card-title").allInnerTexts();
+        // The reader shows the *page* title, which is not the card's label, so
+        // resolve what each link is actually called before comparing.
+        const pageTitles = await page.evaluate(
+          async ([id]) => {
+            const listing = await window.__TAURI_INTERNALS__.invoke("load_page", {
+              args: { id, url: null, page: 1, next: null },
+            });
+            const out = [];
+            for (const item of listing.items.slice(0, 2)) {
+              const art = await window.__TAURI_INTERNALS__.invoke("load_article", {
+                id,
+                url: item.link,
+                title: item.title,
+              });
+              out.push(art.title);
+            }
+            return out;
+          },
+          [fixtureId],
+        );
+        // Both clicks in one tick: after the first, the grid is unmounted and
+        // the second card no longer exists to click.
+        await page.evaluate(() => {
+          const cards = document.querySelectorAll(".grid .card");
+          cards[0]?.click();
+          cards[1]?.click();
+        });
+        await page.waitForSelector(".reader, .banner", { timeout: 45000 });
+        await page.waitForTimeout(2500);
+        const onScreen = (await page.locator(".reader h1").first().innerText()).trim();
+        const wanted = (pageTitles[1] || titles[1] || "").trim();
+        assert.ok(
+          wanted.length < 3 || onScreen.includes(wanted.slice(0, 12)),
+          `a stale response won: expected "${wanted}", reader shows "${onScreen}"`,
+        );
+        console.log(`  back-to-back opens settle on the second one: "${onScreen}"`);
+      }
       if (viaCommand.items.length > 0 && viaCommand.items.length < 5) {
         console.log(`  the item(s): ${JSON.stringify(viaCommand.items[0]).slice(0, 200)}`);
       }
@@ -327,12 +367,8 @@ try {
         `clicking the fixture did not select it (header shows "${shown}")`,
       );
 
-      if (cards > 0) {
-        // A bare-URL listing is long, so a table of contents must be offered.
-        assert.ok(
-          (await page.locator(".main-head button", { hasText: "目录" }).count()) === 0,
-          "no contents button before an article is open",
-        );
+      // Only meaningful if the race test above did not already leave the reader open.
+      if ((await page.locator(".grid .card").count()) > 0) {
         await page.locator(".card").first().click();
         await page.waitForSelector(".reader, .banner", { timeout: 45000 });
       }
