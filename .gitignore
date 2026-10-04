@@ -20,3 +20,6 @@ Thumbs.db
 
 # Native smoke-test artifacts
 test-results/
+
+# Music player dev fixtures
+public/demo/

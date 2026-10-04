@@ -115,25 +115,81 @@ enum Container<'a> {
     Json(&'a Value),
 }
 
+/// The path of a URL, without scheme or host.
+///
+/// Classification must not look at the host: a source served from
+/// `music.example.com` would otherwise mark every one of its videos as music.
+fn link_path(link: &str) -> String {
+    let link = link.trim();
+    if link.is_empty() {
+        return String::new();
+    }
+    let parsed = url::Url::parse(link)
+        .map(|u| u.path().to_string())
+        .unwrap_or_else(|_| link.split(['?', '#']).next().unwrap_or(link).to_string());
+    parsed.to_lowercase()
+}
+
 /// Classify an item so the UI can offer the right affordance.
 fn classify(title: &str, image: &str, link: &str) -> String {
-    let t = title.to_lowercase();
-    let hay = format!("{t} {link}").to_lowercase();
-    const VIDEO_HINTS: &[&str] = &["m3u8", ".mp4", "视频", "video", "影视", "动漫", "movie", "play"];
-    const IMAGE_HINTS: &[&str] = &["图片", "图集", "套图", "美图", "gallery", "photo"];
-    const NOVEL_HINTS: &[&str] = &["小说", "章节", "阅读", "txt", "novel", "book"];
+    let path = link_path(link);
+    let text = title.to_lowercase();
 
-    if VIDEO_HINTS.iter().any(|h| hay.contains(*h)) {
+    const AUDIO_EXT: &[&str] = &[".mp3", ".flac", ".m4a", ".aac", ".wav", ".ogg", ".opus"];
+    const AUDIO_WORDS: &[&str] = &["音乐", "歌单", "歌曲", "music", "audio"];
+    const VIDEO_EXT: &[&str] = &[".m3u8", ".mp4", ".webm", ".mov", ".mkv"];
+    const VIDEO_WORDS: &[&str] = &["视频", "video", "影视", "动漫", "movie", "play"];
+    const IMAGE_WORDS: &[&str] = &["图片", "图集", "套图", "美图", "gallery", "photo"];
+    const NOVEL_WORDS: &[&str] = &["小说", "章节", "阅读", "txt", "novel", "book"];
+
+    // Audio is checked before video: `.m4a` and `.aac` are containers both
+    // formats can use, and a music link that matched "video" would be handed
+    // to the wrong player.
+    let audio = AUDIO_EXT.iter().any(|e| path.ends_with(e)) || AUDIO_WORDS.iter().any(|w| text.contains(*w));
+    if audio {
+        return "music".into();
+    }
+    let video = VIDEO_EXT.iter().any(|e| path.ends_with(e)) || VIDEO_WORDS.iter().any(|w| text.contains(*w));
+    if video {
         return "video".into();
     }
-    if IMAGE_HINTS.iter().any(|h| hay.contains(*h)) {
+    if IMAGE_WORDS.iter().any(|w| text.contains(*w)) {
         return "image".into();
     }
-    if NOVEL_HINTS.iter().any(|h| hay.contains(*h)) {
+    if NOVEL_WORDS.iter().any(|w| text.contains(*w)) {
         return "novel".into();
     }
     let _ = image;
     "article".into()
+}
+
+/// Does this URL point at an audio file the browser can play directly?
+pub fn is_audio_url(url: &str) -> bool {
+    let path = url.split(['?', '#']).next().unwrap_or(url).to_lowercase();
+    [".mp3", ".flac", ".m4a", ".aac", ".wav", ".ogg", ".opus"]
+        .iter()
+        .any(|ext| path.ends_with(ext))
+}
+
+/// Audio files referenced by a page, in document order.
+///
+/// Music sources put tracks in `<audio src>` and `<source src>` far more often
+/// than in prose, so this is what turns an article page into a playlist.
+pub fn audio_from(body: &str) -> Vec<String> {
+    let doc = selector::Doc::parse(body);
+    let mut out: Vec<String> = Vec::new();
+    for url in doc.media_urls() {
+        if !is_audio_url(&url) {
+            continue;
+        }
+        if !url.starts_with("http://") && !url.starts_with("https://") && !url.starts_with("//") {
+            continue;
+        }
+        if !out.contains(&url) {
+            out.push(url);
+        }
+    }
+    out
 }
 
 /// Turn a list body into articles using the source's field rules.
@@ -506,6 +562,7 @@ pub fn load_article(src: &Source, url: &str) -> crate::error::AppResult<ArticleC
         text,
         final_url: resp.url,
         media: media_from(&body),
+        audio: audio_from(&body),
     })
 }
 
@@ -519,6 +576,8 @@ pub struct ArticleContent {
     pub final_url: String,
     /// Direct media URLs found in the body, for the player/gallery.
     pub media: Vec<String>,
+    /// Audio files only, so the music player does not have to filter.
+    pub audio: Vec<String>,
 }
 
 /// Collect playable media URLs from a document.
@@ -735,6 +794,74 @@ mod tests {
         let (items, _) = parse_list(&src, body, "https://api.x.com");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "默认名");
+    }
+
+    #[test]
+    fn audio_links_are_offered_as_music() {
+        let mut src = Source { source_url: "https://music.x.com".into(), ..Default::default() };
+        src.rule_articles = "class.song@all".into();
+        src.rule_title = "a@text".into();
+        src.rule_link = "a@href".into();
+        let body = r#"<ul>
+            <li class="song"><a href="/s/1.mp3">第一首</a></li>
+            <li class="song"><a href="/s/2.flac">第二首</a></li>
+            <li class="song"><a href="/m/3.m3u8">某视频</a></li>
+          </ul>"#;
+        let (items, _) = parse_list(&src, body, "https://music.x.com");
+        assert_eq!(items[0].kind, "music");
+        assert_eq!(items[1].kind, "music");
+        // Audio must not swallow video.
+        assert_eq!(items[2].kind, "video");
+    }
+
+    #[test]
+    fn the_host_name_cannot_hijack_classification() {
+        // A source served from a `music.` domain must not classify its videos
+        // as music just because of the hostname.
+        assert_eq!(classify("某视频", "", "https://music.x.com/m/3.m3u8"), "video");
+        assert_eq!(classify("第一首", "", "https://music.x.com/s/1.mp3"), "music");
+        assert_eq!(classify("MV", "", "https://videos.x.com/w/9.mp4"), "video");
+    }
+
+    #[test]
+    fn a_music_title_is_recognised_without_an_extension() {
+        // A track with no audio extension and no keyword ("稻香") carries no
+        // signal at all — only explicit words like 歌单 can be matched.
+        assert_eq!(classify("热门歌单", "", "https://x.com/list/9"), "music");
+        assert_eq!(classify("纯音乐", "", "https://x.com/list/9"), "music");
+        assert_eq!(classify("周杰伦 - 稻香", "", "https://x.com/list/9"), "article");
+    }
+
+    #[test]
+    fn recognises_audio_urls_with_query_strings() {
+        assert!(is_audio_url("https://cdn.x.com/a.mp3"));
+        assert!(is_audio_url("https://cdn.x.com/a.flac?token=abc"));
+        assert!(is_audio_url("https://cdn.x.com/a.M4A#t=10"));
+        assert!(!is_audio_url("https://cdn.x.com/a.mp4"));
+        assert!(!is_audio_url("https://cdn.x.com/playlist"));
+    }
+
+    #[test]
+    fn collects_audio_players_from_a_page() {
+        let body = r#"
+            <audio src="https://cdn.x.com/one.mp3"></audio>
+            <audio><source src="https://cdn.x.com/two.flac"/></audio>
+            <img src="https://cdn.x.com/cover.jpg">
+            <video src="https://cdn.x.com/clip.mp4"></video>
+        "#;
+        let audio = audio_from(body);
+        assert_eq!(audio, vec!["https://cdn.x.com/one.mp3", "https://cdn.x.com/two.flac"]);
+    }
+
+    #[test]
+    fn audio_urls_are_deduplicated_and_absolute_only() {
+        let body = r#"
+            <audio src="https://cdn.x.com/a.mp3"></audio>
+            <audio src="https://cdn.x.com/a.mp3"></audio>
+            <audio src="data:audio/mpeg;base64,AAAA"></audio>
+        "#;
+        let audio = audio_from(body);
+        assert_eq!(audio, vec!["https://cdn.x.com/a.mp3"]);
     }
 
     #[test]

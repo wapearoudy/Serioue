@@ -69,6 +69,8 @@ export interface ArticleResponse {
   text: string;
   final_url: string;
   media: string[];
+  /** Audio files on the page, for the music player. */
+  audio: string[];
 }
 
 export interface CategoriesResponse {

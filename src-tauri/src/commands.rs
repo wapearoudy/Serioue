@@ -53,6 +53,8 @@ pub struct ArticleResponse {
     pub text: String,
     pub final_url: String,
     pub media: Vec<String>,
+    /// Audio files on the page, for the music player.
+    pub audio: Vec<String>,
 }
 
 fn summary(stored: &StoredSource) -> SourceSummary {
@@ -311,6 +313,7 @@ pub async fn load_article(
         text: content.text,
         final_url: content.final_url,
         media: content.media,
+        audio: content.audio,
     })
 }
 

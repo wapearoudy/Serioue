@@ -54,6 +54,8 @@ export function compactNumber(n: number): string {
 /** A short glyph for content that has no thumbnail. */
 export function kindGlyph(kind: string): string {
   switch (kind) {
+    case "music":
+      return "♪";
     case "video":
       return "▶";
     case "image":
@@ -67,6 +69,8 @@ export function kindGlyph(kind: string): string {
 
 export function kindLabel(kind: string): string {
   switch (kind) {
+    case "music":
+      return "音乐";
     case "video":
       return "视频";
     case "image":

@@ -32,6 +32,8 @@ export default function App() {
   const [article, setArticle] = useState<ArticleResponse | null>(null);
   const [articleLoading, setArticleLoading] = useState(false);
   const [articleError, setArticleError] = useState<string | null>(null);
+  /** The list entry's kind, so the reader can pick the right presentation. */
+  const [articleKind, setArticleKind] = useState<string | null>(null);
 
   // Auto-update: the backend checks on startup and emits when one is found.
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
@@ -93,6 +95,7 @@ export default function App() {
   async function openArticle(item: ArticleItem) {
     if (!selectedId) return;
     setView({ kind: "reader", item });
+    setArticleKind(item.kind);
     setArticleLoading(true);
     setArticleError(null);
     setArticle(null);
@@ -108,6 +111,7 @@ export default function App() {
 
   function openHistoryEntry(entry: HistoryEntry) {
     setView({ kind: "reader", item: { title: entry.title, link: entry.url, image: "", date: "", kind: "article" } });
+    setArticleKind("article");
     setArticleLoading(true);
     setArticleError(null);
     setArticle(null);
@@ -194,6 +198,7 @@ export default function App() {
             error={articleError}
             article={article}
             sourceName={selected?.name ?? ""}
+            itemKind={articleKind ?? undefined}
             onBack={() => setView({ kind: "list" })}
             onOpenExternal={(url) => window.open(url, "_blank")}
           />
