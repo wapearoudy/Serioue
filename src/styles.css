@@ -848,8 +848,33 @@ select:focus {
 
 .player-extras {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 8px;
   margin-top: 8px;
+}
+
+.player-volume {
+  width: 110px;
+}
+
+.player-volume::-webkit-slider-thumb,
+.music-volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text);
+  cursor: pointer;
+}
+
+.player-volume {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  outline: none;
 }
 
 .player-extras button {

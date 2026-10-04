@@ -651,6 +651,14 @@ fn validate_settings(mut s: Settings) -> AppResult<Settings> {
     s.reader_font_size = s.reader_font_size.clamp(13, 30);
     s.reader_line_height = s.reader_line_height.clamp(120, 240);
     s.reader_width = s.reader_width.min(1200);
+    if !s.player_volume.is_finite() {
+        s.player_volume = 0.8;
+    }
+    s.player_volume = s.player_volume.clamp(0.0, 1.0);
+    if !s.player_rate.is_finite() {
+        s.player_rate = 1.0;
+    }
+    s.player_rate = s.player_rate.clamp(0.5, 3.0);
     if !matches!(s.reader_theme.as_str(), "dark" | "light" | "sepia" | "green") {
         s.reader_theme = "dark".to_string();
     }
@@ -753,6 +761,29 @@ pub async fn current_version(app: tauri::AppHandle) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_preferences_are_clamped() {
+        let loud = validate_settings(Settings { player_volume: 9.0, ..Default::default() }).unwrap();
+        assert_eq!(loud.player_volume, 1.0);
+        let muted = validate_settings(Settings { player_volume: -2.0, ..Default::default() }).unwrap();
+        assert_eq!(muted.player_volume, 0.0);
+        let fast = validate_settings(Settings { player_rate: 99.0, ..Default::default() }).unwrap();
+        assert_eq!(fast.player_rate, 3.0);
+    }
+
+    #[test]
+    fn a_nan_player_preference_falls_back_instead_of_persisting() {
+        // NaN slips through comparisons in surprising ways; refuse to store it.
+        let v = validate_settings(Settings {
+            player_volume: f32::NAN,
+            player_rate: f32::NAN,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(v.player_volume, 0.8);
+        assert_eq!(v.player_rate, 1.0);
+    }
 
     #[test]
     fn reader_preferences_are_clamped_to_a_renderable_range() {

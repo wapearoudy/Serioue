@@ -14,6 +14,9 @@ type Props = {
   /** Index to start on; the rest of the list becomes the queue. */
   startAt?: number;
   onNextTrack?: (index: number) => void;
+  /** Remembered volume (0-1), restored on open. */
+  volume?: number;
+  onVolumeChange?: (volume: number) => void;
 };
 
 const AUDIO_EXT = /\.(mp3|flac|m4a|aac|wav|ogg|opus)(\?|#|$)/i;
@@ -50,7 +53,7 @@ const REPEAT_TITLE: Record<Repeat, string> = {
  * than on a single file. Playback uses one `<audio>` element and swaps its
  * `src`, which keeps position, volume and Media Session state consistent.
  */
-export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack }: Props) {
+export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 0.8, onVolumeChange }: Props) {
   const audio = useRef<HTMLAudioElement>(null);
   const [index, setIndex] = useState(startAt);
   /** What the user asked for; the element follows it. */
@@ -58,7 +61,7 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack }: Props) 
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(0.8);
+  const [vol, setVol] = useState(volume);
   const [muted, setMuted] = useState(false);
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState<Repeat>("off");
@@ -141,18 +144,30 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack }: Props) 
     setPosition(seconds);
   }, []);
 
+  const setAndReportVolume = useCallback(
+    (v: number) => {
+      setVol(v);
+      setMuted(false);
+      onVolumeChange?.(v);
+    },
+    [onVolumeChange],
+  );
+
   // Volume and mute are element properties, so mirror them whenever they change.
   useEffect(() => {
     const el = audio.current;
     if (!el) return;
-    el.volume = volume;
+    el.volume = vol;
     el.muted = muted;
-  }, [volume, muted]);
+  }, [vol, muted]);
+
+  // Restore the remembered volume once the element exists.
+  useEffect(() => setVol(volume), [volume]);
 
   useEffect(() => {
     const el = audio.current;
-    if (el && track) el.volume = muted ? 0 : volume;
-  }, [track, volume, muted]);
+    if (el && track) el.volume = muted ? 0 : vol;
+  }, [track, vol, muted]);
 
   // Keyboard control, but never while the user is typing somewhere else.
   useEffect(() => {
@@ -174,11 +189,11 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack }: Props) 
           break;
         case "ArrowUp":
           e.preventDefault();
-          setVolume((v) => Math.min(1, v + 0.05));
+          setAndReportVolume(Math.min(1, vol + 0.05));
           break;
         case "ArrowDown":
           e.preventDefault();
-          setVolume((v) => Math.max(0, v - 0.05));
+          setAndReportVolume(Math.max(0, vol - 0.05));
           break;
         default:
           break;
@@ -274,13 +289,10 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack }: Props) 
           min={0}
           max={1}
           step={0.01}
-          value={muted ? 0 : volume}
-          onChange={(e) => {
-            setMuted(false);
-            setVolume(Number(e.target.value));
-          }}
+          value={muted ? 0 : vol}
+          onChange={(e) => setAndReportVolume(Number(e.target.value))}
           aria-label="音量"
-          style={{ "--pct": `${(muted ? 0 : volume) * 100}%` } as React.CSSProperties}
+          style={{ "--pct": `${(muted ? 0 : vol) * 100}%` } as React.CSSProperties}
         />
       </div>
 

@@ -26,6 +26,8 @@ const DEFAULTS: Settings = {
   reader_font: "",
   reader_theme: "dark",
   reader_width: 0,
+  player_volume: 0.8,
+  player_rate: 1,
 };
 
 const PARAGRAPHS = [

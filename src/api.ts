@@ -138,6 +138,10 @@ export interface Settings {
   reader_theme: string;
   /** Column width in px; 0 means full width. */
   reader_width: number;
+  /** Volume remembered across launches, 0-1. */
+  player_volume: number;
+  /** Playback speed remembered across launches. */
+  player_rate: number;
 }
 
 export interface Stats {

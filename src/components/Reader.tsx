@@ -326,7 +326,12 @@ export function Reader({
             <div className={`reader-body${settings?.reader_font === "serif" ? " serif" : ""}`}>
 
             {view.rendered === "music" && (
-              <MusicPlayer tracks={view.tracks} title={sourceName} />
+              <MusicPlayer
+                tracks={view.tracks}
+                title={sourceName}
+                volume={settings?.player_volume}
+                onVolumeChange={(v) => onSettingsChange({ player_volume: v })}
+              />
             )}
 
             {view.rendered === "video" && view.video && (
@@ -338,6 +343,10 @@ export function Reader({
                 subtitles={view.subtitles}
                 nextTitle={nextChapter?.title}
                 onNext={nextChapter && onOpenSibling ? () => onOpenSibling(nextChapter) : undefined}
+                volume={settings?.player_volume}
+                rate={settings?.player_rate}
+                onVolumeChange={(v) => onSettingsChange({ player_volume: v })}
+                onRateChange={(r) => onSettingsChange({ player_rate: r })}
               />
             )}
 

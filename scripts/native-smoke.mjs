@@ -587,6 +587,18 @@ try {
       );
       const t = await page.evaluate(() => document.querySelector(".music audio").currentTime);
       console.log(`  audio is playing at t=${t.toFixed(2)}s`);
+
+      // Music volume must be remembered too.
+      await page.locator(".music-volume").fill("0.33");
+      await page.waitForTimeout(500);
+      const musicPrefs = await page.evaluate(() =>
+        window.__TAURI_INTERNALS__.invoke("get_settings"),
+      );
+      assert.ok(
+        Math.abs(musicPrefs.player_volume - 0.33) < 0.02,
+        `music volume was not persisted (${musicPrefs.player_volume})`,
+      );
+      console.log(`  music volume persisted: ${musicPrefs.player_volume}`);
       await page.screenshot({ path: path.join(outDir, "native-music.png") });
 
       // -- video ------------------------------------------------------------
@@ -628,6 +640,25 @@ try {
       console.log(
         `  HLS is playing at t=${playing.currentTime.toFixed(2)}s (readyState ${playing.readyState})`,
       );
+
+      // Player preferences must reach the store, not just the element.
+      await page.locator(".player-extras .player-volume").fill("0.42");
+      await page.locator(".player-extras button", { hasText: "×" }).click();
+      await page.waitForSelector(".player-menu", { timeout: 5000 });
+      await page.locator(".player-menu button", { hasText: "1.5×" }).click();
+      await page.waitForTimeout(500);
+      const prefs = await page.evaluate(() =>
+        window.__TAURI_INTERNALS__.invoke("get_settings"),
+      );
+      assert.ok(
+        Math.abs(prefs.player_volume - 0.42) < 0.02,
+        `volume was not persisted (${prefs.player_volume})`,
+      );
+      assert.equal(prefs.player_rate, 1.5, `speed was not persisted (${prefs.player_rate})`);
+      console.log(
+        `  player preferences persisted: volume=${prefs.player_volume}, rate=${prefs.player_rate}`,
+      );
+
       await page.screenshot({ path: path.join(outDir, "native-video.png") });
       console.log("  screenshots: test-results/native-music.png, native-video.png");
     }

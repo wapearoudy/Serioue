@@ -74,6 +74,11 @@ type Props = {
   nextTitle?: string;
   /** Called when the viewer asks to move on; omit to disable autoplay. */
   onNext?: () => void;
+  /** Remembered volume (0-1) and speed, restored on open. */
+  volume?: number;
+  rate?: number;
+  onVolumeChange?: (volume: number) => void;
+  onRateChange?: (rate: number) => void;
 };
 
 /** Seconds the viewer can take to cancel before the next entry starts. */
@@ -139,6 +144,10 @@ export function VideoPlayer({
   subtitles = [],
   nextTitle,
   onNext,
+  volume = 0.8,
+  rate = 1,
+  onVolumeChange,
+  onRateChange,
 }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
@@ -148,7 +157,14 @@ export function VideoPlayer({
   const [err, setErr] = useState<string | null>(null);
   const [levels, setLevels] = useState<Quality[]>([]);
   const [level, setLevel] = useState(-1);
-  const [speed, setSpeed] = useState(1);
+  const [speed, setSpeed] = useState(rate);
+  // The remembered values arrive as props; mirror them into local state so the
+  // controls stay responsive before the settings write comes back.
+  useEffect(() => setSpeed(rate), [rate]);
+  const [vol, setVol] = useState(volume);
+  // Restore the remembered volume once it arrives or changes.
+  useEffect(() => setVol(volume), [volume]);
+  const [muted, setMuted] = useState(false);
   const [panel, setPanel] = useState<"quality" | "speed" | null>(null);
   /** Seconds the viewer can jump back to, or null when there is nothing to resume. */
   const [resumeAt, setResumeAt] = useState<number | null>(null);
@@ -358,12 +374,35 @@ export function VideoPlayer({
     setPanel(null);
   }, []);
 
-  const changeSpeed = useCallback((rate: number) => {
+  const changeSpeed = useCallback(
+    (next: number) => {
+      const el = video.current;
+      if (el) el.playbackRate = next;
+      setSpeed(next);
+      setPanel(null);
+      onRateChange?.(next);
+    },
+    [onRateChange],
+  );
+
+  // Remembered volume: applied on open and whenever it changes. Writing it back
+  // through a callback rather than persisting from here keeps this component
+  // free of the settings store.
+  useEffect(() => {
     const el = video.current;
-    if (el) el.playbackRate = rate;
-    setSpeed(rate);
-    setPanel(null);
-  }, []);
+    if (!el) return;
+    el.volume = vol;
+    el.muted = muted;
+  }, [vol, muted]);
+
+  const changeVolume = useCallback(
+    (next: number) => {
+      setMuted(false);
+      setVol(next);
+      onVolumeChange?.(next);
+    },
+    [onVolumeChange],
+  );
 
   const fullscreen = useCallback(() => {
     const el = wrap.current;
@@ -482,6 +521,23 @@ export function VideoPlayer({
           </button>
         </div>
       )}
+
+      <div className="player-extras">
+        <button onClick={() => setMuted((m) => !m)} title={muted ? "取消静音" : "静音"}>
+          {muted ? "🔇" : "🔊"}
+        </button>
+        <input
+          className="player-volume"
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={muted ? 0 : vol}
+          onChange={(e) => changeVolume(Number(e.target.value))}
+          aria-label="音量"
+          style={{ "--pct": `${(muted ? 0 : vol) * 100}%` } as React.CSSProperties}
+        />
+      </div>
 
       {panel === "quality" && levels.length > 0 && (
         <div className="player-menu">

@@ -129,6 +129,13 @@ pub struct Settings {
     /// Reading column width in px; `0` means full width.
     #[serde(default)]
     pub reader_width: u16,
+    // --- Player preferences --------------------------------------------------
+    /// Volume remembered across launches, 0.0-1.0.
+    #[serde(default = "default_volume")]
+    pub player_volume: f32,
+    /// Playback speed remembered across launches.
+    #[serde(default = "default_rate")]
+    pub player_rate: f32,
 }
 
 fn default_true() -> bool {
@@ -146,6 +153,12 @@ fn default_line_height() -> u8 {
 fn default_theme() -> String {
     "dark".to_string()
 }
+fn default_volume() -> f32 {
+    0.8
+}
+fn default_rate() -> f32 {
+    1.0
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -160,6 +173,8 @@ impl Default for Settings {
             reader_font: String::new(),
             reader_theme: default_theme(),
             reader_width: 0,
+            player_volume: default_volume(),
+            player_rate: default_rate(),
         }
     }
 }
