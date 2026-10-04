@@ -22,12 +22,37 @@ pub struct UpdateInfo {
     pub body: Option<String>,
 }
 
+/// Why an update check failed.
+///
+/// "No release published yet" is a normal state for a young project, not a
+/// malfunction, and showing it as a red error makes a working feature look
+/// broken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpdateFailure {
+    /// The machine cannot reach the update endpoint.
+    Offline,
+    /// The endpoint answered, but there is no release to install — either the
+    /// project has never published one, or the latest release is still a draft.
+    NoRelease,
+    /// Anything else, including a signature that does not verify.
+    Other,
+}
+
 /// An error the frontend can act on.
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateError {
     pub message: String,
     /// True when the failure looks like "no network" rather than "no update".
     pub offline: bool,
+    pub reason: UpdateFailure,
+}
+
+impl UpdateError {
+    fn new(message: String) -> Self {
+        let reason = classify(&message);
+        Self { offline: reason == UpdateFailure::Offline, message, reason }
+    }
 }
 
 /// Cached update between the check and the install click, so the download does
@@ -45,7 +70,7 @@ pub async fn check(app: &AppHandle) -> Result<UpdateInfo, UpdateError> {
 
     let updater = app
         .updater()
-        .map_err(|e| UpdateError { message: e.to_string(), offline: false })?;
+        .map_err(|e| UpdateError::new(e.to_string()))?;
 
     match updater.check().await {
         Ok(Some(update)) => {
@@ -72,8 +97,7 @@ pub async fn check(app: &AppHandle) -> Result<UpdateInfo, UpdateError> {
         }
         Err(e) => {
             let message = e.to_string();
-            let offline = is_offline_error(&message);
-            Err(UpdateError { message, offline })
+            Err(UpdateError::new(message))
         }
     }
 }
@@ -86,20 +110,15 @@ pub async fn install(app: &AppHandle) -> Result<(), UpdateError> {
         Some(u) => u,
         None => {
             // Nothing cached (for example after a restart): check again.
-            let updater = app.updater().map_err(|e| UpdateError {
-                message: e.to_string(),
-                offline: false,
-            })?;
-            let found = updater.check().await.map_err(|e| UpdateError {
-                message: e.to_string(),
-                offline: false,
-            })?;
+            let updater = app.updater().map_err(|e| UpdateError::new(e.to_string()))?;
+            let found = updater.check().await.map_err(|e| UpdateError::new(e.to_string()))?;
             match found {
                 Some(u) => u,
                 None => {
                     return Err(UpdateError {
                         message: "没有可安装的新版本".into(),
                         offline: false,
+                        reason: UpdateFailure::Other,
                     })
                 }
             }
@@ -149,7 +168,7 @@ async fn download_and_install(
             },
         )
         .await
-        .map_err(|e| UpdateError { message: e.to_string(), offline: false })
+        .map_err(|e| UpdateError::new(e.to_string()))
 }
 
 /// Heuristic: distinguish connectivity problems from "you are up to date".
@@ -164,6 +183,35 @@ fn is_offline_error(message: &str) -> bool {
         || m.contains("network")
         || m.contains("offline")
         || m.contains("failed to fetch")
+        // reqwest's generic transport failure. For the updater this always
+        // means "we never reached GitHub", so telling the user to check their
+        // network is the actionable answer.
+        || m.contains("error sending request")
+        || m.contains("request failed")
+}
+
+/// Sort an updater failure into a state the UI can present honestly.
+///
+/// Order matters: a missing `latest.json` must be recognised *before* the
+/// generic fetch heuristics, otherwise "could not fetch ..." reads as a
+/// connectivity problem and the user is told to check their network.
+fn classify(message: &str) -> UpdateFailure {
+    let m = message.to_lowercase();
+
+    // What tauri-plugin-updater says when the endpoint is missing or is not a
+    // release manifest — a 404 from `releases/latest/download/latest.json`.
+    if m.contains("could not fetch a valid release json")
+        || m.contains("valid release json")
+        || m.contains("404")
+        || m.contains("not found")
+    {
+        return UpdateFailure::NoRelease;
+    }
+
+    if is_offline_error(&m) {
+        return UpdateFailure::Offline;
+    }
+    UpdateFailure::Other
 }
 
 /// Check once on startup, silently ignoring failures.
@@ -192,6 +240,49 @@ mod tests {
         assert!(is_offline_error("connect timeout"));
         assert!(!is_offline_error("404 Not Found"));
         assert!(!is_offline_error("invalid signature"));
+    }
+
+    #[test]
+    fn a_missing_manifest_is_not_reported_as_offline() {
+        // This is the exact string the plugin returns when no release exists.
+        let message = "Could not fetch a valid release JSON from the remote";
+        assert_eq!(classify(message), UpdateFailure::NoRelease);
+        // The user must not be told to check their network.
+        assert!(!is_offline_error(message), "{message}");
+    }
+
+    #[test]
+    fn a_404_is_a_missing_release_not_a_network_problem() {
+        assert_eq!(classify("404 Not Found"), UpdateFailure::NoRelease);
+    }
+
+    #[test]
+    fn real_network_failures_still_read_as_offline() {
+        assert_eq!(classify("error sending request: dns error"), UpdateFailure::Offline);
+        assert_eq!(classify("request timed out"), UpdateFailure::Offline);
+    }
+
+    #[test]
+    fn reqwest_transport_errors_read_as_offline() {
+        // What the updater reports when the host cannot be reached at all.
+        let message = "error sending request for url (https://github.com/a/b/releases/latest/download/latest.json)";
+        assert_eq!(classify(message), UpdateFailure::Offline);
+        assert!(UpdateError::new(message.to_string()).offline);
+    }
+
+    #[test]
+    fn a_signature_failure_is_its_own_thing() {
+        assert_eq!(classify("invalid signature"), UpdateFailure::Other);
+    }
+
+    #[test]
+    fn the_error_carries_its_own_classification() {
+        let e = UpdateError::new("Could not fetch a valid release JSON from the remote".into());
+        assert_eq!(e.reason, UpdateFailure::NoRelease);
+        assert!(!e.offline);
+
+        let e = UpdateError::new("dns error".into());
+        assert!(e.offline);
     }
 
     #[test]

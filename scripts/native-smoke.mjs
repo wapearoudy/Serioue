@@ -107,6 +107,42 @@ try {
   console.log(`  version ${version}, ${sources.length} source(s)`);
   console.log("  screenshot: test-results/native-empty.png");
 
+  // The update check must degrade gracefully. No release is published yet, so
+  // the correct outcome is an informational message, not a red error.
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "检查更新" }).click();
+  const updater = page.locator(".main-body").getByText(/还没有发布正式版本|已是最新版本|发现新版本|无法连接 GitHub|检查更新时出错/);
+  try {
+    await updater.waitFor({ timeout: 30000 });
+  } catch {
+    const dump = await page.evaluate(() => ({
+      buttons: [...document.querySelectorAll("button")].map((b) => b.innerText.trim()),
+      mainBody: document.querySelector(".main-body")?.innerText.slice(0, 500),
+    }));
+    console.error("  update panel dump: " + JSON.stringify(dump, null, 2).replace(/\n/g, "\n  "));
+    throw new Error("update check produced no readable result");
+  }
+  const note = (await updater.first().innerText()).replace(/\s+/g, " ");
+  const colour = await updater.first().evaluate((el) => getComputedStyle(el).color);
+  console.log(`  update check says: ${note}`);
+  console.log(`  update notice colour: ${colour}`);
+  assert.ok(
+    !/[a-z]{4,} (for url|release|response)|error (sending|decoding)/i.test(note),
+    `raw plugin error leaked to the user: ${note}`,
+  );
+  // The raw plugin text may still be available as a tooltip for debugging.
+  const tooltip = await updater.first().getAttribute("title");
+  if (note.includes("还没有发布正式版本")) {
+    assert.notEqual(colour, "rgb(240, 168, 164)", "a normal state is painted as an error");
+  }
+  console.log(`  update detail tooltip: ${tooltip ?? "(none)"}`);
+  if (tooltip) {
+    assert.ok(!tooltip.startsWith("error__"), `marker leaked into the tooltip: ${tooltip}`);
+    assert.ok(!/^__/.test(tooltip), `marker leaked into the tooltip: ${tooltip}`);
+  }
+  await page.screenshot({ path: path.join(outDir, "native-update.png") });
+  console.log("  screenshot: test-results/native-update.png");
+
   // Import a real collection and browse it, if the network allows.
   if (process.env.SERIOUS_SMOKE_NETWORK === "1") {
     console.log("  (network mode: importing a real collection)");

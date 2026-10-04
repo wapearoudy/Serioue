@@ -277,12 +277,50 @@ export const events = {
     listen<UpdateProgress>("update-progress", (e) => cb(e.payload)),
 };
 
-/** Strip the backend's error prefix from an update body. */
-export function updateError(body: string | null): string | null {
+/** The three non-error states the backend encodes into `body`. */
+export type UpdateNotice = "offline" | "norelease" | "error";
+
+/** The marker prefixes the backend puts in front of a non-notes body. */
+const UPDATE_MARKERS = {
+  offline: "__offline__",
+  norelease: "__norelease__",
+  error: "__error__",
+} as const;
+
+/** Which marker a release body carries, or `null` if it is real release notes. */
+export function updateNotice(body: string | null): UpdateNotice | null {
   if (!body) return null;
-  if (body.startsWith("__error__")) return body.slice("__error__".length);
-  if (body.startsWith("__offline__")) return "无法连接 GitHub，请检查网络后重试。";
+  if (body.startsWith(UPDATE_MARKERS.offline)) return "offline";
+  if (body.startsWith(UPDATE_MARKERS.norelease)) return "norelease";
+  if (body.startsWith(UPDATE_MARKERS.error)) return "error";
   return null;
+}
+
+/**
+ * Turn an update body into a sentence a user can act on.
+ *
+ * Always returns Chinese: the plugin's own strings ("Could not fetch a valid
+ * release JSON from the remote") are developer-facing and mean nothing to the
+ * person looking at the screen.
+ */
+export function updateError(body: string | null): string | null {
+  switch (updateNotice(body)) {
+    case "offline":
+      return "无法连接 GitHub，请检查网络后重试。";
+    case "norelease":
+      return "还没有发布正式版本。GitHub 上尚未生成 latest.json，等第一个 Release 发布后即可自动更新。";
+    case "error":
+      return "检查更新时出错，请稍后再试。";
+    default:
+      return null;
+  }
+}
+
+/** The raw plugin message behind {@link updateError}, kept for the tooltip. */
+export function updateErrorDetail(body: string | null): string | null {
+  const kind = updateNotice(body);
+  if (!kind || !body) return null;
+  return body.slice(UPDATE_MARKERS[kind].length);
 }
 
 /** Tauri rejects with a plain string; normalise it for display. */

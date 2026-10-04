@@ -601,11 +601,13 @@ pub async fn check_update(app: tauri::AppHandle) -> crate::update::UpdateInfo {
         version: String::new(),
         current_version: app.package_info().version.to_string(),
         date: None,
-        body: if e.offline {
-            Some(format!("__offline__{}", e.message))
-        } else {
-            Some(format!("__error__{}", e.message))
-        },
+        // The marker tells the frontend which state this is; "no release yet"
+        // is a normal condition and must not be painted as a failure.
+        body: Some(match e.reason {
+            crate::update::UpdateFailure::Offline => format!("__offline__{}", e.message),
+            crate::update::UpdateFailure::NoRelease => format!("__norelease__{}", e.message),
+            crate::update::UpdateFailure::Other => format!("__error__{}", e.message),
+        }),
     })
 }
 

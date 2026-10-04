@@ -1,5 +1,15 @@
 import { useEffect, useState } from "react";
-import { api, errorMessage, events, updateError, type UpdateInfo, type UpdateProgress } from "../api";
+import {
+  api,
+  errorMessage,
+  events,
+  updateError,
+  updateErrorDetail,
+  updateNotice,
+  type UpdateInfo,
+  type UpdateNotice,
+  type UpdateProgress,
+} from "../api";
 
 type Props = {
   /** Set when the backend reports an update at startup. */
@@ -111,6 +121,8 @@ export function UpdateSettings() {
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [notice, setNotice] = useState<UpdateNotice | null>(null);
+  const [detail, setDetail] = useState<string | null>(null);
 
   useEffect(() => {
     api.currentVersion().then(setVersion).catch(() => {});
@@ -120,18 +132,30 @@ export function UpdateSettings() {
     setChecking(true);
     setResult(null);
     setProblem(null);
+    setNotice(null);
+    setDetail(null);
     try {
       const info = await api.checkUpdate();
-      const err = updateError(info.body);
-      if (err) setProblem(err);
-      else if (info.available) setResult(`发现新版本 ${info.version}，重启应用后可在启动提示中更新。`);
-      else setResult(`已是最新版本（${info.current_version}）。`);
+      const kind = updateNotice(info.body);
+      if (kind) {
+        setNotice(kind);
+        setProblem(updateError(info.body));
+        setDetail(updateErrorDetail(info.body));
+      } else if (info.available) {
+        setResult(`发现新版本 ${info.version}，重启应用后可在启动提示中更新。`);
+      } else {
+        setResult(`已是最新版本（${info.current_version}）。`);
+      }
     } catch (e) {
       setProblem(errorMessage(e));
     } finally {
       setChecking(false);
     }
   }
+
+  // "No release yet" is a normal state for an unpublished project; only a real
+  // failure deserves the red treatment.
+  const isProblem = notice !== "norelease";
 
   return (
     <div>
@@ -147,7 +171,16 @@ export function UpdateSettings() {
         <div style={{ marginTop: 8, fontSize: 13, color: "var(--text-dim)" }}>{result}</div>
       )}
       {problem && (
-        <div style={{ marginTop: 8, fontSize: 13, color: "#f0a8a4" }}>{problem}</div>
+        <div
+          title={detail ?? undefined}
+          style={{
+            marginTop: 8,
+            fontSize: 13,
+            color: isProblem ? "#f0a8a4" : "var(--text-dim)",
+          }}
+        >
+          {problem}
+        </div>
       )}
     </div>
   );
