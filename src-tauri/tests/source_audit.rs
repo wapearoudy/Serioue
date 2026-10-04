@@ -259,7 +259,7 @@ fn audits_a_collection() {
         sample.len(),
         probe_started.elapsed().as_secs_f64(),
     );
-    let unreachable: Vec<String> = Vec::new();
+    let unreachable_count = sample.len() - reachable.len();
     if reachable.is_empty() {
         println!("nothing reachable; the audit cannot say anything about the engine");
         return;
@@ -318,10 +318,7 @@ fn audits_a_collection() {
         outcome.total,
         took.as_secs_f64(),
     );
-    println!(
-        "({} source(s) could not be opened here and are excluded)\n",
-        sample.len() - reachable.len(),
-    );
+    println!("({unreachable_count} source(s) could not be opened here and are excluded)\n");
     for (key, list) in &buckets {
         println!("  {key:<12} {:>3}  ({:.0}%)", list.len(), list.len() as f64 / total * 100.0);
     }
