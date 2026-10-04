@@ -312,11 +312,13 @@ pub fn parse_list(src: &Source, body: &str, base_url: &str) -> (Vec<ArticleItem>
     let mut seen = std::collections::HashSet::new();
     items.retain(|it| it.link.is_empty() || seen.insert(it.link.clone()));
 
-    // The rules matched nothing. Plenty of sites render their content links in
-    // the HTML and use JavaScript only for chrome, extras or lazy images, so a
-    // link list is often a working substitute where the selector is stale.
-    // Falling back beats showing an empty page.
-    if items.is_empty() && json.is_none() {
+    // The rules did not produce anything usable: either nothing matched, or
+    // what matched carries no address. Plenty of sites render their content
+    // links in the HTML and use JavaScript only for chrome and lazy images, so
+    // a link list is often a working substitute where the selector is stale.
+    // Falling back beats showing an empty or unopenable page.
+    let nothing_openable = items.is_empty() || items.iter().all(|it| it.link.is_empty());
+    if nothing_openable && json.is_none() {
         let links = extract_links(&doc, base_url);
         if links.len() >= 3 {
             return (links, next(&doc, None));
@@ -740,8 +742,48 @@ pub fn extract_content(src: &Source, body: &str, json: Option<&Value>) -> (Strin
         );
     }
 
-    let text = crate::util::html_to_text(body);
+    let text = readable_text(body);
     (body.to_string(), text)
+}
+
+/// Elements that are never article content.
+///
+/// Only used on the last-resort path, when no content rule matched and none of
+/// the usual containers exists. Without it the reader shows the navigation,
+/// the footer and the inline scripts along with the article.
+///
+/// Built per tag because the regex crate has no backreferences, so a single
+/// `\1` closing tag will not compile.
+static CHROME: Lazy<Vec<Regex>> = Lazy::new(|| {
+    [
+        "script", "style", "noscript", "template", "svg", "iframe", "form", "nav", "aside", "header",
+        "footer",
+    ]
+    .iter()
+    .map(|tag| Regex::new(&format!(r"(?is)<{tag}\b[^>]*>.*?</{tag}\s*>")).unwrap())
+    .collect()
+});
+
+/// Drop chrome elements from a document.
+fn strip_chrome(body: &str) -> String {
+    let mut out = body.to_string();
+    for re in CHROME.iter() {
+        out = re.replace_all(&out, "").into_owned();
+    }
+    out
+}
+
+/// Strip chrome before falling back to "the whole page".
+///
+/// The setting banner and inline scripts of a site are not article content, and
+/// a reader should not have to scroll past them. A page that turns out to be
+/// *nothing but* chrome keeps its original text rather than going blank.
+pub fn readable_text(body: &str) -> String {
+    let stripped = crate::util::html_to_text(&strip_chrome(body));
+    if stripped.trim().chars().count() < 20 {
+        return crate::util::html_to_text(body);
+    }
+    stripped
 }
 
 /// Make relative URLs absolute and derive the plain-text fallback.
@@ -988,6 +1030,23 @@ mod tests {
     }
 
     #[test]
+    fn items_without_links_also_fall_back_to_the_page_links() {
+        // The rule matched containers but produced no address — just as
+        // unusable as matching nothing at all.
+        let src = Source {
+            source_url: "https://example.com/".into(),
+            rule_articles: "class.item".into(),
+            rule_title: "h2@text".into(),
+            ..Default::default()
+        };
+        let body: String = (1..=4)
+            .map(|i| format!("<div class=\"item\"><h2>标题 {i}</h2></div><p><a href=\"/p/{i}\">打开</a></p>"))
+            .collect();
+        let (items, _) = parse_list(&src, &format!("<html><body>{body}</body></html>"), "https://example.com/");
+        assert!(items.iter().any(|i| i.link.contains("/p/")), "{items:#?}");
+    }
+
+    #[test]
     fn the_fallback_stays_quiet_when_the_page_has_few_links() {
         let src = Source {
             source_url: "https://example.com/".into(),
@@ -998,6 +1057,33 @@ mod tests {
         let (items, _) = parse_list(&src, body, "https://example.com/");
         // One link is navigation, not a listing.
         assert!(items.is_empty(), "{items:#?}");
+    }
+
+    #[test]
+    fn the_last_resort_drops_navigation_and_scripts() {
+        let src = Source { source_url: "https://x.com/".into(), ..Default::default() };
+        let body = r#"<html><body>
+            <nav><a href="/a">导航一</a><a href="/b">导航二</a></nav>
+            <header>网站标题栏</header>
+            <p>这是真正的正文内容，应当保留下来供读者阅读。</p>
+            <footer>版权所有</footer>
+            <script>var secret = "不该出现的代码";</script>
+            <style>body{color:red}</style>
+          </body></html>"#;
+        let (_, text) = extract_content(&src, body, None);
+        assert!(text.contains("真正的正文内容"), "{text}");
+        assert!(!text.contains("导航一"), "{text}");
+        assert!(!text.contains("网站标题栏"), "{text}");
+        assert!(!text.contains("版权所有"), "{text}");
+        assert!(!text.contains("不该出现的代码"), "{text}");
+    }
+
+    #[test]
+    fn the_last_resort_keeps_a_page_that_is_all_chrome() {
+        // Stripping must not empty a page that happens to be nothing but nav.
+        let src = Source { source_url: "https://x.com/".into(), ..Default::default() };
+        let (_, text) = extract_content(&src, "<html><body><nav>只有导航</nav></body></html>", None);
+        assert!(!text.is_empty(), "chrome-only page produced no text at all");
     }
 
     #[test]
