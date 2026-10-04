@@ -755,7 +755,28 @@ try {
     assert.equal(one.stages.length, 5, "check_source did not report every stage");
     assert.ok(one.duration_ms >= 0, "check_source did not report a duration");
     console.log("  screenshot: test-results/native-verify-detail.png");
+
+    // Jumping to a source from the report must switch cleanly. That handler
+    // used to be a copy of the sidebar's that forgot to clear the chapter list,
+    // so the contents drawer offered the previous source's chapters.
+    await page.locator(".toc-head button").click().catch(() => {});
+    const before = (await page.locator(".src-item.selected").first().innerText()).trim();
+    await reported.locator(".verify-actions button", { hasText: "打开源" }).click();
+    await page.waitForSelector(".grid, .empty", { timeout: 30000 });
+    const nowSelected = (await page.locator(".src-item.selected").first().innerText()).trim();
+    console.log(`  jumped from the report: ${before} -> ${nowSelected}`);
+    assert.notEqual(nowSelected, before, "jumping did not change the selection");
+
+    const cardsAfter = await page.locator(".card").count();
+    if (cardsAfter > 1) {
+      await page.locator(".card").nth(1).click();
+      await page.waitForSelector(".reader, .banner", { timeout: 30000 });
+      const hasContents =
+        (await page.locator('.main-head button', { hasText: "目录" }).count()) > 0;
+      assert.ok(hasContents, "the jumped-to source offered no contents for its own article");
+      console.log("  the jumped-to source offers a contents list of its own");
     }
+  }
   }
 } catch (error) {
   failed = true;

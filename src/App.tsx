@@ -123,6 +123,22 @@ export default function App() {
   }, [selectedId]);
 
   /**
+   * Make a source current and show its listing.
+   *
+   * There is exactly one of these on purpose. It used to exist three times —
+   * the sidebar, the verify panel and 继续阅读 — and they drifted: the chapter
+   * list was only cleared in one of them, so the reader's contents drawer
+   * could offer the previous source's chapters.
+   */
+  function selectSource(id: string) {
+    setSelectedId(id);
+    setView({ kind: "list" });
+    setArticle(null);
+    setSiblings([]);
+    setProgressToken((t) => t + 1);
+  }
+
+  /**
    * Load a source's listing so the reader has a table of contents for it.
    *
    * Without this, opening an article from history or from 继续阅读 leaves the
@@ -179,15 +195,7 @@ export default function App() {
       <Sidebar
         sources={sources}
         selectedId={selectedId}
-        onSelect={(id) => {
-          setSelectedId(id);
-          setView({ kind: "list" });
-          setArticle(null);
-          // The previous source's chapters must not linger behind the
-          // contents drawer of the new one.
-          setSiblings([]);
-          setProgressToken((t) => t + 1);
-        }}
+        onSelect={selectSource}
         onChanged={refreshSources}
         onOpenRepo={() => setShowRepo(true)}
         onOpenHistory={() => setView({ kind: "history" })}
@@ -200,7 +208,7 @@ export default function App() {
         onContinue={(entry) => {
           // Resuming an article means switching to its source first, so the
           // category tabs and contents come from the right place.
-          setSelectedId(entry.source_id);
+          selectSource(entry.source_id);
           void loadSiblingsFor(entry.source_id);
           void api
             .loadArticle(entry.source_id, entry.url, entry.title)
@@ -294,10 +302,7 @@ export default function App() {
           <VerifyPanel
             sources={sources}
             selectedId={selectedId}
-            onSelect={(id) => {
-              setSelectedId(id);
-              setView({ kind: "list" });
-            }}
+            onSelect={selectSource}
             onBack={() => setView({ kind: "list" })}
             onChecked={refreshSources}
           />
