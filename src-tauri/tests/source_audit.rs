@@ -216,7 +216,56 @@ fn audits_a_collection() {
     println!("collection {url} carries {} source(s)", sources.len());
     let sample: Vec<Source> = sources.into_iter().take(limit).collect();
 
-    let targets: Vec<Target> = sample
+    // Phase 1 — which of these can this machine open at all?
+    //
+    // Roughly half of any given sample is dead, DNS-blocked or geo-restricted,
+    // and that share drifts between runs. Folding it into the same denominator
+    // as engine quality makes the number unmeasurable: an improvement is
+    // invisible under the noise. So reachability is settled first, and the
+    // pass rate is reported over what this machine can actually reach.
+    let probe_started = Instant::now();
+    // Reachability probes are independent one-shot requests, so they go out
+    // concurrently; doing them one at a time dominated the whole audit.
+    let threads = workers.clamp(1, 16);
+    let chunk = sample.len().div_ceil(threads).max(1);
+    let parts: Vec<Vec<&Source>> = sample.chunks(chunk).map(|c| c.iter().collect()).collect();
+    let found: Vec<Vec<Source>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = parts
+            .iter()
+            .map(|part| {
+                scope.spawn(move || {
+                    let mut ok = Vec::new();
+                    for s in part {
+                        let probe = s.source_url.trim();
+                        if probe.starts_with("http")
+                            && serious_lib::engine::fetch::fetch_ok(Some(s), probe).is_ok()
+                        {
+                            ok.push((*s).clone());
+                        }
+                    }
+                    ok
+                })
+            })
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    });
+    let mut reachable: Vec<Source> = Vec::new();
+    for part in found {
+        reachable.extend(part);
+    }
+    println!(
+        "phase 1: {} of {} reachable from this machine in {:.1}s ({threads} threads)",
+        reachable.len(),
+        sample.len(),
+        probe_started.elapsed().as_secs_f64(),
+    );
+    let unreachable: Vec<String> = Vec::new();
+    if reachable.is_empty() {
+        println!("nothing reachable; the audit cannot say anything about the engine");
+        return;
+    }
+
+    let targets: Vec<Target> = reachable
         .iter()
         .map(|s| Target {
             id: s.source_url.clone(),
@@ -227,6 +276,9 @@ fn audits_a_collection() {
 
     let buckets: Mutex<BTreeMap<&'static str, Vec<String>>> = Mutex::new(BTreeMap::new());
     let detail: Mutex<Vec<(String, Bucket)>> = Mutex::new(Vec::new());
+    let js_total = Mutex::new(0usize);
+    let single_page = Mutex::new(0usize);
+    let no_js_working = Mutex::new(0usize);
 
     let started = Instant::now();
     let outcome = verify::verify_many(targets, workers, &AtomicBool::new(false), |target, health| {
@@ -238,47 +290,59 @@ fn audits_a_collection() {
             Bucket::RuleBroken(_) => "rule-broken",
             Bucket::Degraded(_) => "degraded",
         };
+        if serious_lib::engine::verify::needs_javascript(&target.source) {
+            *js_total.lock().unwrap() += 1;
+        }
+        if serious_lib::engine::verify::is_single_page(&target.source) {
+            *single_page.lock().unwrap() += 1;
+        }
+        if matches!(bucket, Bucket::Working)
+            && !serious_lib::engine::verify::needs_javascript(&target.source)
+        {
+            *no_js_working.lock().unwrap() += 1;
+        }
         buckets.lock().unwrap().entry(key).or_default().push(line);
         detail.lock().unwrap().push((target.name.clone(), bucket));
     });
     let took = started.elapsed();
+    let js_total = *js_total.lock().unwrap();
+    let single_page = *single_page.lock().unwrap();
+    let no_js_working = *no_js_working.lock().unwrap();
 
     let buckets = buckets.into_inner().unwrap();
     let total = outcome.total.max(1) as f64;
 
     println!("\n===== 审计结果 / audit of {url} =====");
-    println!("sampled {} source(s) in {:.1}s with {workers} worker(s)\n", outcome.total, took.as_secs_f64());
+    println!(
+        "verified {} reachable source(s) in {:.1}s with {workers} worker(s)",
+        outcome.total,
+        took.as_secs_f64(),
+    );
+    println!(
+        "({} source(s) could not be opened here and are excluded)\n",
+        sample.len() - reachable.len(),
+    );
     for (key, list) in &buckets {
         println!("  {key:<12} {:>3}  ({:.0}%)", list.len(), list.len() as f64 / total * 100.0);
     }
 
-    // The actionable number: of everything we could actually reach, how much
-    // produced usable content?
-    let reachable = outcome.total - buckets.get("unreachable").map(|v| v.len()).unwrap_or(0);
+    // The headline number: of what this machine can reach, how much does the
+    // engine actually handle?
     let working = buckets.get("working").map(|v| v.len()).unwrap_or(0);
-    println!("\n  of {reachable} reachable source(s), {working} work ({:.0}%)",
-        if reachable == 0 { 0.0 } else { working as f64 / reachable as f64 * 100.0 });
+    let broken = outcome.total - working;
+    println!(
+        "\n  ENGINE PASS RATE: {working}/{} reachable = {:.0}%  ({broken} not handled)",
+        outcome.total,
+        working as f64 / total * 100.0,
+    );
 
     // Why the failures happen decides what is worth building. A page that
-    // needs a browser is a different problem from a stale selector.
-    let mut js_needs_browser = 0usize;
-    let mut stale_rules = 0usize;
-    for s in &sample {
-        if !serious_lib::engine::verify::needs_javascript(s) {
-            continue;
-        }
-        let health = verify::verify(s, None);
-        if health.ok || health.stages.iter().any(|st| st.state == serious_lib::store::StageState::Fail) {
-            js_needs_browser += 1;
-        } else {
-            stale_rules += 1;
-        }
-    }
-    let single_page = sample.iter().filter(|s| serious_lib::engine::verify::is_single_page(s)).count();
-    println!("\n  profile of the {}-source sample:", sample.len());
-    println!("    declared enableJs          {js_needs_browser}");
-    println!("    single-page (rule=body)    {single_page}");
-    println!("    js sources still parsing    {stale_rules}");
+    // needs a browser is a different problem from a stale selector. Collected
+    // during the run rather than by verifying everything a second time.
+    println!("\n  profile of the {} reachable source(s):", outcome.total);
+    println!("    work without a browser      {no_js_working}");
+    println!("    declare enableJs            {js_total}");
+    println!("    single-page (rule=body)     {single_page}");
 
     if let Some(list) = buckets.get("rule-broken") {
         println!("\n----- rule-broken (the ones we can fix) -----");
