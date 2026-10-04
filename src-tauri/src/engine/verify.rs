@@ -158,9 +158,92 @@ where
 // Stages
 // ---------------------------------------------------------------------------
 
+/// Is this a single-page source rather than a listing?
+///
+/// Legado sources that declare `ruleArticles: "body"` with no link rule yield
+/// one article containing the whole document. Expecting a list of linked items
+/// from them is a mistake, and reporting that as "rule broken" is a false
+/// alarm — the rule is doing exactly what it was asked to do.
+pub fn is_single_page(src: &Source) -> bool {
+    src.rule_articles.trim().eq_ignore_ascii_case("body") && src.rule_link.trim().is_empty()
+}
+
+/// Does the page need a browser to show its content?
+///
+/// `enableJs` marks a source whose site builds the page in JavaScript. A
+/// server-side parser can never read those, so they must be reported as a
+/// different kind of limitation from "the rules went stale".
+pub fn needs_javascript(src: &Source) -> bool {
+    src.enable_js
+}
+
+/// Choose the category worth probing.
+///
+/// Blindly taking the first category is wrong: plenty of sources put a
+/// **search** entry first (`「搜索🔍」`), and a search page without a keyword
+/// legitimately returns nothing — which the report would then blame on the
+/// rules. Prefer the site root, then any category that is not a search box,
+/// and only fall back to the root when every category is a search entry.
+fn probe_category(src: &Source) -> (String, String) {
+    let cats = browse::categories(src);
+    let is_search = |name: &str| {
+        let n = name.to_lowercase();
+        n.contains("搜索") || n.contains("搜") || n.contains("search") || n.contains("keyword")
+    };
+
+    // `sortUrl` entries are usually relative, so compare resolved URLs — a raw
+    // string comparison would never match a category pointing at the root.
+    let root = src.source_url.trim().trim_end_matches('/').to_string();
+    let resolved = |u: &str| {
+        crate::util::absolute_url(u.trim(), &src.source_url)
+            .trim()
+            .trim_end_matches('/')
+            .to_string()
+    };
+
+    if let Some(c) = cats.iter().find(|c| resolved(&c.url) == root) {
+        return (c.name.clone(), c.url.clone());
+    }
+    if let Some(c) = cats.iter().find(|c| !is_search(&c.name)) {
+        return (c.name.clone(), c.url.clone());
+    }
+    // Every category is a search entry — probe the site root instead.
+    ("首页".to_string(), src.source_url.clone())
+}
+
 /// Local check: does the rule payload declare the selectors it needs?
 fn stage_rule(src: &Source) -> StageResult {
     let cats = browse::categories(src);
+    let has_list_rules = !src.rule_articles.trim().is_empty()
+        || !src.rule_title.trim().is_empty()
+        || !src.rule_link.trim().is_empty();
+
+    // A bare-URL source has no rules by design; it is browsed as a link list,
+    // so a missing content rule is expected rather than a defect.
+    if !has_list_rules {
+        let content = if src.rule_content.trim().is_empty() { "按链接列表浏览" } else { "已配置正文规则" };
+        return stage(
+            "rule",
+            "规则",
+            StageState::Ok,
+            format!("{} 个分类 · 无解析规则，作为链接列表浏览 · {content}", cats.len()),
+        );
+    }
+
+    // A single-page source reads the document itself, so `ruleContent` is a
+    // refinement rather than a requirement.
+    if is_single_page(src) {
+        return stage(
+            "rule",
+            "规则",
+            StageState::Ok,
+            format!(
+                "整页源（ruleArticles=body），直接读取页面本身 · {} 个分类",
+                cats.len()
+            ),
+        );
+    }
+
     let mut missing: Vec<&str> = Vec::new();
     if src.rule_articles.trim().is_empty() {
         missing.push("列表选择器 ruleArticles");
@@ -178,15 +261,14 @@ fn stage_rule(src: &Source) -> StageResult {
     let detail = if missing.is_empty() {
         format!("{} 个分类 · 列表规则已设置 · {title_rule}", cats.len())
     } else {
-        format!("缺少 {}", missing.join("、"))
+        format!("{} 个分类 · {title_rule} · 未设置 {}", cats.len(), missing.join("、"))
     };
 
-    stage(
-        "rule",
-        "规则",
-        if missing.is_empty() { StageState::Ok } else { StageState::Warn },
-        detail,
-    )
+    // Informational, never a failure: every one of these states still opens in
+    // the reader, because the engine falls back to inferring a list rule and
+    // to the whole document when no content rule is declared. Painting them
+    // amber buried the real blockers under noise.
+    stage("rule", "规则", StageState::Ok, detail)
 }
 
 fn probe_homepage(src: &Source) -> (StageResult, ()) {
@@ -223,9 +305,7 @@ fn probe_homepage(src: &Source) -> (StageResult, ()) {
 /// This repeats what `browse::load_page` does, because the report needs the
 /// response size and status to tell "site is down" apart from "rule broke".
 fn probe_list(src: &Source) -> (StageResult, Vec<ArticleItem>) {
-    let cats = browse::categories(src);
-    let template = cats.first().map(|c| c.url.clone()).unwrap_or_else(|| src.source_url.clone());
-    let cat_name = cats.first().map(|c| c.name.clone()).unwrap_or_default();
+    let (cat_name, template) = probe_category(src);
 
     let raw = browse::expand(&template, 1);
     let url = crate::util::absolute_url(raw.trim(), &src.source_url);
@@ -249,13 +329,36 @@ fn probe_list(src: &Source) -> (StageResult, Vec<ArticleItem>) {
     let size = size_label(resp.body.len());
     let (items, _) = browse::parse_list(src, &resp.body, &resp.url);
 
+    // A single-page source is supposed to yield one whole-document article.
+    // Demanding a list of linked items from it would report a working rule as
+    // broken, so this is information, not a warning.
+    if is_single_page(src) {
+        let chars = browse::load_article(src, &resp.url)
+            .map(|c| c.text.chars().count())
+            .unwrap_or(0);
+        let (state, detail) = if chars == 0 {
+            (
+                StageState::Fail,
+                format!("整页源打开了({size})但提取不到文字——页面很可能由 JS 渲染"),
+            )
+        } else {
+            (StageState::Ok, format!("整页源，提取到 {chars} 字正文"))
+        };
+        return (stage("list", "列表", state, detail), Vec::new());
+    }
+
     if items.is_empty() {
+        let hint = if needs_javascript(src) {
+            "该源开启了 JS 解析，而页面内容由脚本生成——纯服务端解析拿不到内容"
+        } else {
+            "通常是站点改版导致选择器失效"
+        };
         return (
             stage(
                 "list",
                 "列表",
                 StageState::Warn,
-                format!("「{cat_name}」能打开({size}),但规则没有匹配到任何条目——通常是站点改版导致选择器失效"),
+                format!("「{cat_name}」能打开({size}),但规则没有匹配到任何条目——{hint}"),
             ),
             Vec::new(),
         );
@@ -367,7 +470,9 @@ pub fn verify(source: &Source, cancel: Option<&AtomicBool>) -> Health {
     let mut stages = vec![stage_rule(source)];
     let mut item_count = 0usize;
     // Shadowed by the real count below; this covers the early-cancel return.
-    let usable = 0usize;
+    // A single-page source yields one article rather than a list, so it counts
+    // as usable from the start and the content stage decides the verdict.
+    let usable = usize::from(is_single_page(source));
     let mut sample = String::new();
 
     let stop = |flag: Option<&AtomicBool>| flag.map(|c| c.load(Ordering::Relaxed)).unwrap_or(false);
@@ -392,16 +497,24 @@ pub fn verify(source: &Source, cancel: Option<&AtomicBool>) -> Health {
     let usable = items.iter().filter(|i| !i.link.trim().is_empty()).count();
     sample = items.first().map(|i| crate::util::short_url(i.title.trim(), 40)).unwrap_or_default();
     stages.push(list);
-    let first_item = items.into_iter().next();
 
     // -- detail and search
     if stop(cancel) {
         stages.push(stage("detail", "详情", StageState::Skip, "已取消"));
         stages.push(stage("search", "搜索", StageState::Skip, "已取消"));
     } else {
+        // A single-page source has no list item to open; the page itself is
+        // the article, so check the content rule against it directly.
+        let single = is_single_page(source);
+        let root = source.source_url.clone();
         let src = source.clone();
-        let item = first_item.unwrap_or_default();
-        let (detail, _) = run_stage("detail", "详情", move || probe_detail(&src, &item));
+        let (detail, _) = run_stage("detail", "详情", move || {
+            let item = ArticleItem {
+                link: if single { root } else { String::new() },
+                ..ArticleItem::default()
+            };
+            probe_detail(&src, &item)
+        });
         stages.push(detail);
 
         let src = source.clone();
@@ -558,17 +671,99 @@ mod tests {
     }
 
     #[test]
-    fn rule_stage_warns_when_selectors_are_missing() {
+    fn rule_stage_only_notes_what_is_unset() {
         let mut s = src();
+        // A source that parses lists but declares no content rule still opens
+        // in the reader, so this must not be painted as a problem.
         s.rule_articles = String::new();
+        s.rule_title = "a@href".into();
         let r = stage_rule(&s);
-        assert_eq!(r.state, StageState::Warn);
+        assert_eq!(r.state, StageState::Ok, "{}", r.detail);
         assert!(r.detail.contains("ruleArticles"), "{}", r.detail);
     }
 
     #[test]
     fn rule_stage_passes_with_both_selectors() {
         assert_eq!(stage_rule(&src()).state, StageState::Ok);
+    }
+
+    #[test]
+    fn a_bare_url_source_is_not_reported_as_missing_rules() {
+        // No rules at all is how a bookmark page is meant to be consumed, so
+        // warning about `ruleContent` here would be a false alarm.
+        let s = Source {
+            source_url: "https://example.com/".into(),
+            source_name: "链接页".into(),
+            ..Default::default()
+        };
+        let r = stage_rule(&s);
+        assert_eq!(r.state, StageState::Ok, "{}", r.detail);
+        assert!(r.detail.contains("链接列表"), "{}", r.detail);
+    }
+
+    #[test]
+    fn a_search_category_is_never_used_as_the_probe() {
+        // Plenty of sources put a search box first; probing it without a
+        // keyword returns nothing and would be blamed on the rules.
+        let s = Source {
+            source_url: "https://example.com/".into(),
+            sort_url: "搜索::/search?kw={{keyWord}}$$$最新::/list".into(),
+            ..src()
+        };
+        let (name, url) = probe_category(&s);
+        assert!(!name.contains("搜索"), "probed a search category: {name}");
+        // `sortUrl` keeps the entry relative; `probe_list` resolves it later.
+        assert_eq!(url, "/list");
+    }
+
+    #[test]
+    fn the_site_root_wins_when_it_is_a_category() {
+        let s = Source {
+            source_url: "https://example.com/".into(),
+            sort_url: "搜索::/search$$$首页::/$$$最新::/list".into(),
+            ..src()
+        };
+        let (name, url) = probe_category(&s);
+        // The entry is written as `/`, which only matches the root once resolved.
+        assert_eq!(name, "首页");
+        assert_eq!(url, "/");
+    }
+
+    #[test]
+    fn an_all_search_source_falls_back_to_the_root() {
+        let s = Source {
+            source_url: "https://example.com/".into(),
+            sort_url: "搜索::/search?kw={{keyWord}}".into(),
+            ..src()
+        };
+        let (_, url) = probe_category(&s);
+        assert_eq!(url, "https://example.com/");
+    }
+
+    #[test]
+    fn a_body_rule_without_a_link_rule_is_a_single_page_source() {
+        let s = Source {
+            source_url: "https://example.com/".into(),
+            rule_articles: "body".into(),
+            ..Default::default()
+        };
+        assert!(is_single_page(&s));
+    }
+
+    #[test]
+    fn a_real_list_rule_is_never_a_single_page_source() {
+        let s = Source {
+            rule_articles: "@class=item".into(),
+            ..Default::default()
+        };
+        assert!(!is_single_page(&s));
+        // Even with no link rule: the list rule is what does the work.
+        let s = Source {
+            rule_articles: "body".into(),
+            rule_link: "@id=a".into(),
+            ..Default::default()
+        };
+        assert!(!is_single_page(&s));
     }
 
     #[test]

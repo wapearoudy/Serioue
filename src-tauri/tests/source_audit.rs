@@ -54,7 +54,7 @@ enum Bucket {
 }
 
 impl Bucket {
-    fn of(health: &Health) -> Self {
+    fn of(src: &Source, health: &Health) -> Self {
         let fail = |key: &str| health.stages.iter().find(|s| s.key == key && s.state == serious_lib::store::StageState::Fail);
 
         // A homepage or list fetch error means we never saw the real page.
@@ -69,6 +69,14 @@ impl Bucket {
                 // HTTP 4xx/5xx: the site answered, it just refused us.
                 Bucket::Degraded(format!("{}: {}", stage.label, stage.detail))
             };
+        }
+
+        let hard_failed = health.stages.iter().any(|s| s.state == serious_lib::store::StageState::Fail);
+
+        // A single-page source *is* the article; it produces no list, so
+        // counting it as broken for having zero items would be wrong.
+        if serious_lib::engine::verify::is_single_page(src) {
+            return if hard_failed { Bucket::RuleBroken(health.status.clone()) } else { Bucket::Working };
         }
 
         // Reached the site, but no usable content came out.
@@ -112,6 +120,59 @@ fn lists_collections_by_size() {
 
 #[test]
 #[ignore]
+fn diagnoses_one_source() {
+    // Point this at a single failing source to see what the engine actually
+    // receives. Guessing from the verdict alone is how the audit gets wrong.
+    let url = env_or("SERIOUS_AUDIT_URL", DEFAULT_URL);
+    let needle = env_or("SERIOUS_AUDIT_MATCH", "秘密入口");
+    let dump = env_or("SERIOUS_AUDIT_DUMP", "3000");
+
+    let sources = repo::fetch_collection(&url).expect("collection fetch failed");
+    let src = sources
+        .iter()
+        .find(|s| s.display_name().contains(&needle))
+        .unwrap_or_else(|| panic!("no source matching {needle:?}"));
+
+    println!("=== {} ===", src.display_name());
+    println!("sourceUrl : {}", src.source_url);
+    println!("sortUrl   : {:?}", src.sort_url.chars().take(160).collect::<String>());
+    println!("ruleArt   : {:?}", src.rule_articles);
+    println!("ruleTitle : {:?}", src.rule_title);
+    println!("ruleLink  : {:?}", src.rule_link);
+    println!("ruleCont  : {:?}", src.rule_content.chars().take(120).collect::<String>());
+    println!("enableJs  : {}", src.enable_js);
+    println!("categories:");
+    for c in serious_lib::engine::browse::categories(src) {
+        println!("   {:<16} {}", c.name, c.url);
+    }
+
+    let health = verify::verify(src, None);
+    println!("\nverdict: {}", health.status);
+    for s in &health.stages {
+        println!("  {} {:<6} {:>7}  {}", s.state.glyph(), s.label, format!("{}ms", s.ms), s.detail);
+    }
+
+    // Pull the probe page again and show what came back.
+    let cats = serious_lib::engine::browse::categories(src);
+    let probe = cats
+        .first()
+        .map(|c| c.url.clone())
+        .unwrap_or_else(|| src.source_url.clone());
+    let probe = serious_lib::engine::browse::expand(&probe, 1);
+    let probe = serious_lib::util::absolute_url(probe.trim(), &src.source_url);
+    println!("\nprobe url: {probe}");
+    match serious_lib::engine::fetch::fetch_ok(Some(src), &probe) {
+        Ok(r) => {
+            println!("status {} · {} · {} bytes", r.status, r.content_type, r.body.len());
+            let n: usize = dump.parse().unwrap_or(3000);
+            println!("--- body ---\n{}\n--- end ---", r.body.chars().take(n).collect::<String>());
+        }
+        Err(e) => println!("probe fetch failed: {e}"),
+    }
+}
+
+#[test]
+#[ignore]
 fn audits_a_collection() {
     let url = env_or("SERIOUS_AUDIT_URL", DEFAULT_URL);
     let limit: usize = env_or("SERIOUS_AUDIT_LIMIT", "40").parse().unwrap_or(40);
@@ -135,7 +196,7 @@ fn audits_a_collection() {
 
     let started = Instant::now();
     let outcome = verify::verify_many(targets, workers, &AtomicBool::new(false), |target, health| {
-        let bucket = Bucket::of(&health);
+        let bucket = Bucket::of(&target.source, &health);
         let line = format!("{} — {}", target.name, health.status);
         let key = match &bucket {
             Bucket::Working => "working",
@@ -163,6 +224,27 @@ fn audits_a_collection() {
     let working = buckets.get("working").map(|v| v.len()).unwrap_or(0);
     println!("\n  of {reachable} reachable source(s), {working} work ({:.0}%)",
         if reachable == 0 { 0.0 } else { working as f64 / reachable as f64 * 100.0 });
+
+    // Why the failures happen decides what is worth building. A page that
+    // needs a browser is a different problem from a stale selector.
+    let mut js_needs_browser = 0usize;
+    let mut stale_rules = 0usize;
+    for s in &sample {
+        if !serious_lib::engine::verify::needs_javascript(s) {
+            continue;
+        }
+        let health = verify::verify(s, None);
+        if health.ok || health.stages.iter().any(|st| st.state == serious_lib::store::StageState::Fail) {
+            js_needs_browser += 1;
+        } else {
+            stale_rules += 1;
+        }
+    }
+    let single_page = sample.iter().filter(|s| serious_lib::engine::verify::is_single_page(s)).count();
+    println!("\n  profile of the {}-source sample:", sample.len());
+    println!("    declared enableJs          {js_needs_browser}");
+    println!("    single-page (rule=body)    {single_page}");
+    println!("    js sources still parsing    {stale_rules}");
 
     if let Some(list) = buckets.get("rule-broken") {
         println!("\n----- rule-broken (the ones we can fix) -----");
