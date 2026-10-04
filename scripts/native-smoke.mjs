@@ -381,9 +381,44 @@ try {
       const stored = await page.evaluate(() =>
         window.__TAURI_INTERNALS__.invoke("get_settings"),
       );
-      console.log(
-        `  after reload: theme=${theme}, persisted font size=${stored.reader_font_size}px`,
+      // Opening from history must build a contents list for that article's own
+      // source. Before, it inherited the previous source's chapters and the
+      // drawer offered the wrong book.
+      const historyEntry = await page.evaluate(
+        async ([id]) => {
+          const page = await window.__TAURI_INTERNALS__.invoke("load_page", {
+            args: { id, url: null, page: 1, next: null },
+          });
+          const first = page.items[0];
+          if (!first) return null;
+          await window.__TAURI_INTERNALS__.invoke("load_article", {
+            id,
+            url: first.link,
+            title: first.title,
+          });
+          const hist = await window.__TAURI_INTERNALS__.invoke("list_history", { limit: 5 });
+          return hist.find((h) => h.url === first.link) ?? null;
+        },
+        [fixtureId],
       );
+      assert.ok(historyEntry, "the fixture produced no history entry to reopen");
+
+      await page.getByRole("button", { name: "历史", exact: true }).click();
+      await page.waitForSelector(".row", { timeout: 15000 });
+      await page.locator(".row").first().click();
+      await page.waitForSelector(".reader, .banner", { timeout: 30000 });
+      assert.ok((await page.locator(".reader").count()) > 0, "history did not open an article");
+
+      await page.waitForSelector(".main-head button", { hasText: "目录" }, { timeout: 20000 });
+      await page.locator(".main-head button", { hasText: "目录" }).click();
+      await page.waitForSelector(".toc-list li", { timeout: 10000 });
+      const historyToc = await page.locator(".toc-list li").count();
+      assert.ok(
+        historyToc > 0,
+        "reopening from history offered no contents at all",
+      );
+      console.log(`  reopening from history offers ${historyToc} chapters from its own source`);
+      await page.locator(".toc-head button").click();
     }
 
     // -- Categories and search in the packaged app ---------------------------
@@ -519,7 +554,7 @@ try {
     console.log("  a script-built document came back through the webview");
   }
 
-  // -- Music and video in the packaged app ---------------------------------
+    // -- Music and video in the packaged app ---------------------------------
     // These paths had only ever been covered by browser tests; two real bugs
     // last round hid behind that gap.
     if (fixtureBase) {

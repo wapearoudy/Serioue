@@ -122,6 +122,23 @@ export default function App() {
     };
   }, [selectedId]);
 
+  /**
+   * Load a source's listing so the reader has a table of contents for it.
+   *
+   * Without this, opening an article from history or from 继续阅读 leaves the
+   * *previous* source's list in place, and the contents would offer the
+   * chapters of a different book. Failing to load one is not an error — the
+   * article still opens, it just has no chapter navigation.
+   */
+  async function loadSiblingsFor(sourceId: string) {
+    try {
+      const page = await api.loadPage({ id: sourceId, url: null, page: 1 });
+      setSiblings(page.items ?? []);
+    } catch {
+      setSiblings([]);
+    }
+  }
+
   async function openArticle(item: ArticleItem) {
     if (!selectedId) return;
     setView({ kind: "reader", item });
@@ -129,6 +146,7 @@ export default function App() {
     setArticleLoading(true);
     setArticleError(null);
     setArticle(null);
+    void loadSiblingsFor(selectedId);
     try {
       const res = await api.loadArticle(selectedId, item.link, item.title);
       setArticle(res);
@@ -145,6 +163,7 @@ export default function App() {
     setArticleLoading(true);
     setArticleError(null);
     setArticle(null);
+    void loadSiblingsFor(entry.source_id);
     // History rows may belong to a source that is no longer selected.
     api
       .loadArticle(entry.source_id, entry.url, entry.title)
@@ -164,6 +183,9 @@ export default function App() {
           setSelectedId(id);
           setView({ kind: "list" });
           setArticle(null);
+          // The previous source's chapters must not linger behind the
+          // contents drawer of the new one.
+          setSiblings([]);
           setProgressToken((t) => t + 1);
         }}
         onChanged={refreshSources}
@@ -179,6 +201,7 @@ export default function App() {
           // Resuming an article means switching to its source first, so the
           // category tabs and contents come from the right place.
           setSelectedId(entry.source_id);
+          void loadSiblingsFor(entry.source_id);
           void api
             .loadArticle(entry.source_id, entry.url, entry.title)
             .then((res) => {
