@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
+import { api, type ArticleItem } from "../api";
 import { Gallery, extractImages, sanitize } from "./media";
 import { isPlayable } from "./VideoPlayer";
 import { VideoPlayer } from "./VideoPlayer";
@@ -17,6 +17,11 @@ type Props = {
   itemKind?: string;
   /** The URL to remember a reading position against. */
   articleUrl?: string;
+  /** The list the entry came from, used as a table of contents. */
+  siblings?: ArticleItem[];
+  /** The link of the entry being read, so the contents can highlight it. */
+  currentLink?: string;
+  onOpenSibling?: (item: ArticleItem) => void;
   settings: Settings | null;
   onSettingsChange: (patch: Partial<Settings>) => void;
   onBack: () => void;
@@ -30,16 +35,28 @@ export function Reader({
   sourceName,
   itemKind,
   articleUrl,
+  siblings = [],
+  currentLink,
+  onOpenSibling,
   settings,
   onSettingsChange,
   onBack,
   onOpenExternal,
 }: Props) {
   const [mode, setMode] = useState<"auto" | "text" | "rich">("auto");
+  const [tocOpen, setTocOpen] = useState(false);
   const body = useRef<HTMLDivElement>(null);
   const [progress, setProgress] = useState(0);
   const restored = useRef<string | null>(null);
   const savedAt = useRef(0);
+
+  // Chapter navigation is only meaningful when the entry came from a list.
+  const position = useMemo(() => {
+    if (siblings.length < 2 || !currentLink) return -1;
+    return siblings.findIndex((i) => i.link === currentLink);
+  }, [siblings, currentLink]);
+  const prevChapter = position > 0 ? siblings[position - 1] : null;
+  const nextChapter = position >= 0 && position < siblings.length - 1 ? siblings[position + 1] : null;
 
   const view = useMemo(() => {
     if (!article) return null;
@@ -147,6 +164,27 @@ export function Reader({
     };
   }, [article, articleUrl]);
 
+  // `]` / `[` move between chapters; `t` toggles the contents.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!onOpenSibling) return;
+      const el = document.activeElement;
+      if (el && ["INPUT", "TEXTAREA"].includes(el.tagName)) return;
+      const target = e.key === "]" ? nextChapter : e.key === "[" ? prevChapter : null;
+      if (target) {
+        e.preventDefault();
+        onOpenSibling(target);
+      } else if (e.key === "t" || e.key === "T") {
+        if (siblings.length > 1) {
+          e.preventDefault();
+          setTocOpen((o) => !o);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [nextChapter, prevChapter, siblings.length, onOpenSibling]);
+
   return (
     <>
       <div className="main-head">
@@ -178,12 +216,49 @@ export function Reader({
           </div>
         )}
         <ReaderSettings settings={settings} onChange={onSettingsChange} />
+        {siblings.length > 1 && (
+          <button
+            className={tocOpen ? "on" : ""}
+            onClick={() => setTocOpen((o) => !o)}
+            title="目录 (T)"
+          >
+            目录
+          </button>
+        )}
         {article && (
           <button onClick={() => onOpenExternal(article.final_url)} title="在浏览器中打开">
             ↗
           </button>
         )}
       </div>
+
+      {tocOpen && siblings.length > 1 && (
+        <div className="toc">
+          <div className="toc-head">
+            目录
+            <span className="spacer" />
+            <button className="ghost" onClick={() => setTocOpen(false)} aria-label="关闭目录">
+              ✕
+            </button>
+          </div>
+          <ol className="toc-list">
+            {siblings.map((item, i) => (
+              <li
+                key={`${item.link}-${i}`}
+                className={i === position ? "current" : ""}
+                onClick={() => {
+                  setTocOpen(false);
+                  onOpenSibling?.(item);
+                }}
+              >
+                <span className="toc-n">{i + 1}</span>
+                <span className="toc-t">{item.title || item.link}</span>
+                {item.date && <span className="toc-d">{item.date}</span>}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
 
       <div className="main-body reader-scroll" ref={body}>
         {error && <Banner text={error} />}
@@ -240,6 +315,17 @@ export function Reader({
             {view.text.length < 40 && view.rendered !== "text" && (
               <div style={{ marginTop: 26, paddingTop: 18, borderTop: "1px solid var(--border)" }}>
                 <button onClick={() => setMode("text")}>查看纯文本</button>
+              </div>
+            )}
+
+            {(prevChapter || nextChapter) && (
+              <div className="chapter-nav">
+                <button disabled={!prevChapter} onClick={() => prevChapter && onOpenSibling?.(prevChapter)}>
+                  ← 上一章
+                </button>
+                <button disabled={!nextChapter} onClick={() => nextChapter && onOpenSibling?.(nextChapter)}>
+                  下一章 →
+                </button>
               </div>
             )}
             </div>

@@ -7,9 +7,22 @@ type Props = {
   sourceName: string;
   categories: Category[];
   onOpen: (item: ArticleItem) => void;
+  /**
+   * Report the loaded items upwards.
+   *
+   * The list unmounts when the reader opens, so its contents have to live in
+   * the parent if the reader is to show a table of contents for them.
+   */
+  onItemsChange?: (items: ArticleItem[]) => void;
 };
 
-export function ArticleList({ sourceId, sourceName, categories, onOpen }: Props) {
+export function ArticleList({
+  sourceId,
+  sourceName,
+  categories,
+  onOpen,
+  onItemsChange,
+}: Props) {
   const [catIndex, setCatIndex] = useState(0);
   const [items, setItems] = useState<ArticleItem[]>([]);
   const [next, setNext] = useState<string | null>(null);
@@ -83,6 +96,11 @@ export function ArticleList({ sourceId, sourceName, categories, onOpen }: Props)
       setLoadingMore(false);
     }
   }
+
+  // Keep the parent in step with whatever is currently listed.
+  useEffect(() => {
+    onItemsChange?.(items);
+  }, [items, onItemsChange]);
 
   async function search(e: React.FormEvent) {
     e.preventDefault();

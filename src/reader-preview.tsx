@@ -12,7 +12,7 @@ import "./dev-tauri-stub";
 import { StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ReaderSettings, THEMES, applyReaderSettings } from "./components/ReaderSettings";
-import type { Settings } from "./api";
+import type { ArticleItem, Settings } from "./api";
 import "./styles.css";
 
 const DEFAULTS: Settings = {
@@ -44,6 +44,19 @@ const PARAGRAPHS = [
 function Preview() {
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
   const [progress, setProgress] = useState(0);
+  const [tocOpen, setTocOpen] = useState(false);
+  const [chapter, setChapter] = useState(2);
+
+  // Stand-in for the list the entry came from, so the table of contents and
+  // chapter navigation have something real to work with.
+  const chapters: ArticleItem[] = PARAGRAPHS.slice(0, 6).map((_p, i) => ({
+    title: `第 ${i + 1} 章`,
+    link: `https://example.com/book/chapter-${i + 1}`,
+    image: "",
+    date: `2024-0${i + 1}-01`,
+    kind: "novel",
+  }));
+  const current = chapters[chapter];
 
   const change = useCallback((patch: Partial<Settings>) => {
     setSettings((prev) => {
@@ -75,11 +88,44 @@ function Preview() {
               <span>{settings.reader_font_size}px · {settings.reader_theme}</span>
             </div>
             <span className="spacer" />
+            {chapters.length > 1 && (
+              <button className={tocOpen ? "on" : ""} onClick={() => setTocOpen((o) => !o)}>
+                目录
+              </button>
+            )}
             <ReaderSettings settings={settings} onChange={change} />
           </div>
+
+          {tocOpen && chapters.length > 1 && (
+            <div className="toc">
+              <div className="toc-head">
+                目录
+                <span className="spacer" />
+                <button className="ghost" onClick={() => setTocOpen(false)}>
+                  ✕
+                </button>
+              </div>
+              <ol className="toc-list">
+                {chapters.map((c, i) => (
+                  <li
+                    key={c.link}
+                    className={i === chapter ? "current" : ""}
+                    onClick={() => {
+                      setTocOpen(false);
+                      setChapter(i);
+                    }}
+                  >
+                    <span className="toc-n">{i + 1}</span>
+                    <span className="toc-t">{c.title}</span>
+                    <span className="toc-d">{c.date}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
           <div className="main-body reader-scroll" onScroll={onScroll}>
             <article className="reader">
-              <h1>关于排版与进度</h1>
+              <h1>{current.title}</h1>
               <div className="reader-meta">
                 演示源
                 {progress > 0.02 && ` · 已读 ${Math.round(progress * 100)}%`}
@@ -88,6 +134,17 @@ function Preview() {
                 {PARAGRAPHS.map((p, i) => (
                   <p key={i}>{p}</p>
                 ))}
+              </div>
+              <div className="chapter-nav">
+                <button disabled={chapter === 0} onClick={() => setChapter((c) => Math.max(0, c - 1))}>
+                  ← 上一章
+                </button>
+                <button
+                  disabled={chapter === chapters.length - 1}
+                  onClick={() => setChapter((c) => Math.min(chapters.length - 1, c + 1))}
+                >
+                  下一章 →
+                </button>
               </div>
             </article>
           </div>

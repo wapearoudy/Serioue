@@ -36,6 +36,8 @@ export default function App() {
   const [articleError, setArticleError] = useState<string | null>(null);
   /** The list entry's kind, so the reader can pick the right presentation. */
   const [articleKind, setArticleKind] = useState<string | null>(null);
+  /** The list the reader opened from, used for the table of contents. */
+  const [siblings, setSiblings] = useState<ArticleItem[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
 
   // Reader preferences drive CSS variables and the reading theme, so they are
@@ -196,6 +198,7 @@ export default function App() {
               sourceName={selected.name}
               categories={categories}
               onOpen={openArticle}
+              onItemsChange={setSiblings}
             />
           </>
         )}
@@ -226,6 +229,9 @@ export default function App() {
             sourceName={selected?.name ?? ""}
             itemKind={articleKind ?? undefined}
             articleUrl={article?.final_url || undefined}
+            siblings={siblings}
+            currentLink={view.kind === "reader" ? view.item.link : undefined}
+            onOpenSibling={openArticle}
             settings={settings}
             onSettingsChange={changeSettings}
             onBack={() => setView({ kind: "list" })}

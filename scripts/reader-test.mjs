@@ -113,6 +113,44 @@ try {
 
   await page.screenshot({ path: path.join(outDir, "reader-preview.png") });
   console.log("  screenshot: test-results/reader-preview.png");
+
+  // -- table of contents ---------------------------------------------------
+  await page.locator(".main-head button", { hasText: "目录" }).click();
+  await page.waitForSelector(".toc-list", { timeout: 5000 });
+  const rows = await page.locator(".toc-list li").count();
+  assert.equal(rows, 6, `expected 6 chapters, saw ${rows}`);
+  const currentRow = await page.locator(".toc-list li.current .toc-t").innerText();
+  assert.equal(currentRow.trim(), "第 3 章", `wrong chapter highlighted (${currentRow})`);
+  console.log(`  contents lists ${rows} chapters, highlighting "${currentRow.trim()}"`);
+
+  // Jumping from the contents must move the reader.
+  await page.locator(".toc-list li").nth(5).click();
+  await page.waitForFunction(
+    () => document.querySelector(".reader h1")?.textContent?.includes("第 6 章"),
+    null,
+    { timeout: 5000 },
+  );
+  assert.equal(await page.locator(".toc").count(), 0, "the contents stayed open after jumping");
+  console.log("  picking a chapter moved the reader and closed the contents");
+
+  // The footer buttons move too, and stop at the ends of the list.
+  await page.locator(".chapter-nav button", { hasText: "上一章" }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".reader h1")?.textContent?.includes("第 5 章"),
+    null,
+    { timeout: 5000 },
+  );
+  const prevDisabled = await page.locator(".chapter-nav button", { hasText: "上一章" }).isDisabled();
+  assert.ok(!prevDisabled, "previous should still be available");
+  await page.locator(".chapter-nav button", { hasText: "下一章" }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".reader h1")?.textContent?.includes("第 6 章"),
+    null,
+    { timeout: 5000 },
+  );
+  const nextDisabled = await page.locator(".chapter-nav button", { hasText: "下一章" }).isDisabled();
+  assert.ok(nextDisabled, "next should be disabled on the last chapter");
+  console.log("  chapter buttons walk the list and disable at both ends");
 } catch (error) {
   failed = true;
   console.error("reader test failed:", error.message);
