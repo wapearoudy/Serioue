@@ -1,49 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-const VIDEO_EXT = /\.(m3u8|mp4|webm|ogg|mov|mkv)(\?|$)/i;
-
-/** True when a URL points at something the browser can play directly. */
-export function isPlayable(url: string): boolean {
-  return VIDEO_EXT.test(url) || url.startsWith("blob:");
-}
-
-/**
- * HTML5 video player.
- *
- * HLS (`.m3u8`) is only natively supported on Safari, so on Chromium we fall
- * back to the `<video>` element with a clear hint rather than pretending to
- * play. That keeps behaviour honest instead of silently failing.
- */
-export function VideoPlayer({ src, poster }: { src: string; poster?: string }) {
-  const ref = useRef<HTMLVideoElement>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const hls = /\.m3u8(\?|$)/i.test(src);
-
-  useEffect(() => {
-    setErr(null);
-  }, [src]);
-
-  return (
-    <div className="player-wrap">
-      <video
-        ref={ref}
-        src={src}
-        poster={poster}
-        controls
-        autoPlay={false}
-        onError={() => setErr("视频无法播放：源可能已失效，或该格式不被内置播放器支持。")}
-      />
-      {hls && (
-        <div style={{ padding: "8px 12px", fontSize: 12, color: "var(--text-faint)" }}>
-          这是 HLS (m3u8) 直播流。若无法播放，请在系统播放器或 VLC 中打开该链接。
-        </div>
-      )}
-      {err && (
-        <div style={{ padding: "8px 12px", fontSize: 12, color: "#f0a8a4" }}>{err}</div>
-      )}
-    </div>
-  );
-}
+export { isPlayable, VideoPlayer } from "./VideoPlayer";
 
 export function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
   useEffect(() => {

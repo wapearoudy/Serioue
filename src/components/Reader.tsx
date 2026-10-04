@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { Gallery, VideoPlayer, extractImages, isPlayable, sanitize } from "./media";
+import { Gallery, extractImages, sanitize } from "./media";
+import { isPlayable } from "./VideoPlayer";
+import { VideoPlayer } from "./VideoPlayer";
 import { MusicPlayer, extractAudio, isAudioUrl, type Track } from "./MusicPlayer";
 import { ReaderSettings } from "./ReaderSettings";
 import { Banner, Spinner } from "./ui";
@@ -208,7 +210,7 @@ export function Reader({
             )}
 
             {view.rendered === "video" && view.video && (
-              <VideoPlayer src={view.video} poster={view.images[0]} />
+              <VideoPlayer src={view.video} poster={view.images[0]} title={article!.title} />
             )}
 
             {view.rendered === "gallery" && <Gallery images={view.images} />}
