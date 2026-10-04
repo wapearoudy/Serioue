@@ -70,6 +70,12 @@ pub enum Step {
     /// Without this the token falls through to `Attr` and silently matches
     /// nothing, which looks like a dead source rather than an unsupported rule.
     TextMatch(String),
+    /// The Nth match of a selector, e.g. `a.0` for the first anchor.
+    ///
+    /// Common in shared collections — `a.0@href` alone appears in 95 of the
+    /// rules in one collection. Read as CSS it is invalid (a class cannot
+    /// start with a digit), so it used to match nothing at all.
+    Indexed(String, usize),
     /// Attribute extraction (terminal).
     Attr(String),
     Text,
@@ -77,6 +83,19 @@ pub enum Step {
     Html,
     OuterHtml,
     RemoveHtml,
+}
+
+/// Split `a.0` into (`a`, 0).
+///
+/// Only a purely numeric trailing segment counts, so real class names that
+/// merely end in a digit (`div.col2`) are unaffected.
+fn split_index(step: &str) -> Option<(&str, usize)> {
+    let (base, tail) = step.rsplit_once('.')?;
+    let at: usize = tail.parse().ok()?;
+    if base.trim().is_empty() {
+        return None;
+    }
+    Some((base, at))
 }
 
 fn classify(step: &str) -> Step {
@@ -101,6 +120,13 @@ fn classify(step: &str) -> Step {
                 return if wants_text { Step::Text } else { Step::Select(css) };
             }
             // A leading `tag.`, `id.` or `class.` is a descendant selection.
+            // A trailing `.<number>` selects the Nth match, including after a
+            // `tag.`/`id.`/`class.` prefix (`tag.a.1`). Checked before those
+            // prefixes, which would otherwise build the invalid selector
+            // `tag.a.1` and quietly match nothing.
+            if let Some((base, at)) = split_index(step) {
+                return Step::Indexed(base.to_string(), at);
+            }
             if step.starts_with("tag.") || step.starts_with("id.") || step.starts_with("class.") {
                 return Step::Select(step.to_string());
             }
@@ -652,6 +678,19 @@ impl Doc {
                     current = hit;
                     i += 1;
                 }
+                Step::Indexed(base, at) => {
+                    // Indexed per container: `ul@li@a.0@href` wants the first
+                    // anchor of *each* list item, not the first anchor of the
+                    // whole list.
+                    let mut next = Vec::new();
+                    for e in &current {
+                        if let Some(hit) = select_within(&[*e], base).into_iter().nth(*at) {
+                            next.push(hit);
+                        }
+                    }
+                    current = next;
+                    i += 1;
+                }
                 Step::Attr(a) => {
                     return (current, Extract::Attr(a.clone()));
                 }
@@ -863,6 +902,42 @@ mod tests {
         let doc = Doc::parse(r#"<li><a href="/x">名称</a><b onclick="importApp(1)">一键导入</b></li>"#);
         let hits = doc.eval("li@text.一键导入@onclick");
         assert_eq!(hits, vec!["importApp(1)"], "{hits:?}");
+    }
+
+    #[test]
+    fn an_index_selects_the_nth_match_per_container() {
+        // `a.0@href` appears in 95 rules of one collection; read as CSS it is
+        // invalid and silently matched nothing.
+        let doc = Doc::parse(
+            r#"<ul>
+                 <li><h4>第一</h4><a href="/1">播放</a><a href="/1x">别的</a></li>
+                 <li><h4>第二</h4><a href="/2">播放</a><a href="/2x">别的</a></li>
+               </ul>"#,
+        );
+        let links = doc.eval("ul@li@a.0@href");
+        assert_eq!(links, vec!["/1", "/2"], "{links:?}");
+        let second = doc.eval("ul@li@a.1@href");
+        assert_eq!(second, vec!["/1x", "/2x"], "{second:?}");
+    }
+
+    #[test]
+    fn an_index_works_through_the_tag_prefix() {
+        let doc = Doc::parse(r#"<div><a href="/one">1</a><a href="/two">2</a></div>"#);
+        assert_eq!(doc.eval("div@tag.a.1@href"), vec!["/two"]);
+        assert_eq!(doc.eval("div@tag.a.0@href"), vec!["/one"]);
+    }
+
+    #[test]
+    fn a_class_ending_in_a_digit_is_still_a_class() {
+        // `col2` is a real class name, not an index.
+        let doc = Doc::parse(r#"<div><p class="col2">命中</p></div>"#);
+        assert_eq!(doc.eval("div@class.col2@text"), vec!["命中"]);
+    }
+
+    #[test]
+    fn an_out_of_range_index_yields_nothing_rather_than_everything() {
+        let doc = Doc::parse(r#"<li><a href="/1">只有一条</a></li>"#);
+        assert!(doc.eval("li@a.3@href").is_empty());
     }
 
     #[test]
