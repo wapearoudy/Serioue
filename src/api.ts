@@ -142,6 +142,14 @@ export interface Settings {
   player_volume: number;
   /** Playback speed remembered across launches. */
   player_rate: number;
+  /** Render script-built pages when the ordinary fetch yields nothing. */
+  /**
+   * Render script-built pages when the ordinary fetch yields nothing.
+   *
+   * Opt-in: the mechanism works, but measuring it over real sources showed no
+   * gain for its cost.
+   */
+  render_js: boolean;
 }
 
 export interface Stats {

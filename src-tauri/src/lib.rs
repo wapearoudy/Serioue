@@ -35,6 +35,11 @@ pub fn run() {
                 }));
             }
 
+            // The render switch is a stored preference, not a constant.
+            engine::browse::set_render_enabled(
+                app.state::<commands::AppState>().store.settings().render_js,
+            );
+
             // Check for a new version shortly after launch. Failures are
             // swallowed so an offline machine is never greeted by an error.
             let handle = app.handle().clone();

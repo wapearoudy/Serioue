@@ -136,6 +136,15 @@ pub struct Settings {
     /// Playback speed remembered across launches.
     #[serde(default = "default_rate")]
     pub player_rate: f32,
+    /// Render script-built pages when the ordinary fetch yields nothing.
+    ///
+    /// Off by default. The mechanism is proven — a page whose links are built
+    /// entirely by script does yield a list through it — but measured over 14
+    /// real sources it changed nothing, while costing an offscreen window and
+    /// a couple of seconds on every page that fails to parse. So it stays
+    /// opt-in until there is evidence it earns that.
+    #[serde(default)]
+    pub render_js: bool,
 }
 
 fn default_true() -> bool {
@@ -175,6 +184,7 @@ impl Default for Settings {
             reader_width: 0,
             player_volume: default_volume(),
             player_rate: default_rate(),
+            render_js: false,
         }
     }
 }

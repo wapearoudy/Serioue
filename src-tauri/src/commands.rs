@@ -658,7 +658,10 @@ pub async fn get_settings(state: State<'_, AppState>) -> AppResult<Settings> {
 #[tauri::command]
 pub async fn set_settings(state: State<'_, AppState>, settings: Settings) -> AppResult<()> {
     let store = state.store.clone();
-    blocking(move || store.set_settings(validate_settings(settings)?)).await
+    let settings = validate_settings(settings)?;
+    // The engine reads the render switch from a global, not from the store.
+    crate::engine::browse::set_render_enabled(settings.render_js);
+    blocking(move || store.set_settings(settings)).await
 }
 
 /// Clamp reader preferences to a range the UI can actually render.

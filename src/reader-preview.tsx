@@ -28,6 +28,7 @@ const DEFAULTS: Settings = {
   reader_width: 0,
   player_volume: 0.8,
   player_rate: 1,
+  render_js: true,
 };
 
 const PARAGRAPHS = [

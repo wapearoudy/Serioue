@@ -839,6 +839,56 @@ try {
     for (const t of stageText) console.log(`    ${t.replace(/\s+/g, " ")}`);
     await page.screenshot({ path: path.join(outDir, "native-verify-detail.png") });
 
+    // -- does rendering actually help? ---------------------------------------
+    // The audit runs outside the app and never registers a renderer, so the
+    // only honest way to measure the fallback is to toggle it here and check
+    // the same sources twice.
+    if (wantNetwork) {
+      // Enough sources that some of them are the script-built kind; two is not
+      // a sample.
+      const ids = await page.evaluate(async () => {
+        const all = await window.__TAURI_INTERNALS__.invoke("list_sources", { filter: null });
+        return all.slice(0, 14).map((s) => s.id);
+      });
+      const ab = await page.evaluate(
+        async ([ids]) => {
+          const settings = await window.__TAURI_INTERNALS__.invoke("get_settings");
+          const setRender = async (on) =>
+            window.__TAURI_INTERNALS__.invoke("set_settings", {
+              settings: { ...settings, render_js: on },
+            });
+          const names = Object.fromEntries(
+            (await window.__TAURI_INTERNALS__.invoke("list_sources", { filter: null }))
+              .map((s) => [s.id, s.name]),
+          );
+
+          await setRender(false);
+          const before = await window.__TAURI_INTERNALS__.invoke("check_all", {
+            ids,
+            scope: "all",
+          });
+          const beforeHealth = Object.fromEntries(
+            ids.map((id) => [id, null]),
+          );
+          await setRender(true);
+          const after = await window.__TAURI_INTERNALS__.invoke("check_all", { ids, scope: "all" });
+          return { before, after, names, beforeHealth };
+        },
+        [ids],
+      );
+      console.log(
+        `  render off: ${ab.before.ok} ok / ${ab.before.warn} warn / ${ab.before.failed} failed` +
+          ` of ${ab.before.total}`,
+      );
+      console.log(
+        `  render on : ${ab.after.ok} ok / ${ab.after.warn} warn / ${ab.after.failed} failed` +
+          ` of ${ab.after.total}`,
+      );
+      if (ab.after.ok > ab.before.ok) {
+        console.log(`  rendering fixed ${ab.after.ok - ab.before.ok} source(s)`);
+      }
+    }
+
     // A single-source check must return the same shape.
     const one = await page.evaluate(
       async (id) => window.__TAURI_INTERNALS__.invoke("check_source", { id }),

@@ -104,6 +104,22 @@ export function SettingsPanel({
             </label>
           </div>
 
+          <div className="field">
+            <label title="源声明需要 JavaScript 而页面没解析出内容时，用离屏浏览器渲染一次再解析">
+              <input
+                type="checkbox"
+                style={{ width: "auto", marginRight: 8 }}
+                checked={settings.render_js}
+                onChange={(e) => save({ ...settings, render_js: e.target.checked })}
+              />
+              用浏览器渲染脚本页面
+            </label>
+            <p style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 4 }}>
+              少数站点的内容由脚本生成。打开后会为这类页面多花约 2 秒；实测对真实合集尚无明显提升，
+              默认关闭。
+            </p>
+          </div>
+
           <h3 style={{ fontSize: 15, margin: "26px 0 10px" }}>已导入的合集</h3>
           {collections.length === 0 ? (
             <p style={{ color: "var(--text-faint)", fontSize: 13 }}>还没有导入任何合集。</p>

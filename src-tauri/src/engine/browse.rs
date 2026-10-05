@@ -657,7 +657,26 @@ fn should_render(src: &Source, body: &str, url: &str) -> bool {
     // All three must hold, and each one is a reason not to bother:
     // the source has to ask for JavaScript, a renderer has to be registered,
     // and the page we fetched must be a real document rather than a dead one.
-    src.enable_js && rendered_html_available() && !body.trim().is_empty() && url.starts_with("http")
+    src.enable_js
+        && render_enabled()
+        && rendered_html_available()
+        && !body.trim().is_empty()
+        && url.starts_with("http")
+}
+
+/// Whether the browser-render fallback is switched on.
+///
+/// A setting rather than a constant: it costs an offscreen window and a couple
+/// of seconds per page, so a user on a slow machine may want it off.
+static RENDER_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_render_enabled(on: bool) {
+    RENDER_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn render_enabled() -> bool {
+    RENDER_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether a renderer has been registered.
