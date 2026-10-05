@@ -10,8 +10,11 @@ type Props = {
   onOpenRepo: () => void;
   onOpenHistory: () => void;
   onOpenShelf: () => void;
+  onOpenHighlights: () => void;
   /** How many lists are saved, shown next to the tab. */
   shelfCount?: number;
+  /** How many passages are highlighted, shown next to the tab. */
+  highlightCount?: number;
   onOpenVerify: () => void;
   onOpenSettings: () => void;
   stats: { sources: number; working: number; checked: number } | null;
@@ -125,6 +128,13 @@ export function Sidebar(props: Props) {
           title="把常读的分类收进书架，随时回去接着读"
         >
           书架{(props.shelfCount ?? 0) > 0 ? ` ${props.shelfCount}` : ""}
+        </button>
+        <button
+          className="tab"
+          onClick={props.onOpenHighlights}
+          title="所有划线与笔记"
+        >
+          划线{(props.highlightCount ?? 0) > 0 ? ` ${props.highlightCount}` : ""}
         </button>
         <button className="tab" onClick={props.onOpenSettings}>
           设置

@@ -851,6 +851,68 @@ try {
         { timeout: 10000 },
       );
       console.log("  removing a shelf row persisted through the backend");
+
+      // -- Highlights ---------------------------------------------------------
+      // The selection handling itself is DOM work and is covered by
+      // scripts/highlight-test.mjs in a real browser. What is left is the part
+      // only the packaged app can prove: the save, the listing and the removal
+      // going through the real store.
+      const marked = await page.evaluate(async (base) => {
+        return window.__TAURI_INTERNALS__.invoke("add_highlight", {
+          highlight: {
+            id: "",
+            url: `${base}/article.html`,
+            source_id: "fixture",
+            title: "夹具文章",
+            source_name: "夹具源",
+            text: "这是一段用来验证划线能穿过 IPC 的文字。",
+            note: "打包测试",
+            created_at: 0,
+          },
+        });
+      }, fixtureBase);
+      assert.ok(marked.id, "the backend did not assign a highlight id");
+      assert.ok(marked.created_at > 0, "the backend did not stamp created_at");
+      assert.equal(marked.note, "打包测试", "the note did not survive the round trip");
+
+      const listed = await page.evaluate(
+        () => window.__TAURI_INTERNALS__.invoke("list_highlights"),
+      );
+      assert.ok(
+        listed.some((h) => h.id === marked.id),
+        "the highlight did not reach the list",
+      );
+      console.log(`  highlight saved and listed through IPC: "${marked.text}"`);
+
+      // Highlighting the same passage again must not duplicate it.
+      const again = await page.evaluate(async ([base, first]) => {
+        return window.__TAURI_INTERNALS__.invoke("add_highlight", {
+          highlight: {
+            id: "",
+            url: `${base}/article.html`,
+            source_id: "fixture",
+            title: "夹具文章",
+            source_name: "夹具源",
+            text: first,
+            note: "",
+            created_at: 0,
+          },
+        });
+      }, [fixtureBase, marked.text]);
+      assert.equal(again.id, marked.id, "the same passage produced a second highlight");
+
+      await page.evaluate(
+        (id) => window.__TAURI_INTERNALS__.invoke("remove_highlight", { id }),
+        marked.id,
+      );
+      const after = await page.evaluate(
+        () => window.__TAURI_INTERNALS__.invoke("list_highlights"),
+      );
+      assert.ok(
+        !after.some((h) => h.id === marked.id),
+        "removing the highlight did not persist",
+      );
+      console.log("  re-highlighting was idempotent and removal persisted");
     }
 
     // Verification is driven from the imported collection, so it needs the

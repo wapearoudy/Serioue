@@ -515,6 +515,83 @@ select:focus {
   border-radius: 2px;
 }
 
+/* A passage the reader marked, drawn back into the article on open. */
+.reader-rich mark.reader-mark,
+.reader-body mark.reader-mark {
+  background: color-mix(in srgb, var(--warn) 34%, transparent);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* The 高亮 / 笔记 buttons that follow a selection. */
+.mark-pop {
+  position: fixed;
+  z-index: 40;
+  transform: translate(-50%, calc(-100% - 10px));
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 22px rgb(0 0 0 / 45%);
+  animation: offer-in 0.14s ease-out;
+}
+
+/* The 划线 list. */
+.marks {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.marks-count {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.mark-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mark-row:hover {
+  background: var(--bg-elevated);
+}
+
+.mark-row-main {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.mark-quote {
+  margin: 0 0 6px;
+  padding-left: 11px;
+  border-left: 3px solid var(--warn);
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+.mark-note {
+  margin: 0 0 6px 14px;
+  padding: 6px 10px;
+  font-size: 13px;
+  background: var(--bg-elevated);
+  border-radius: 6px;
+  color: var(--text-dim);
+}
+
+.mark-meta {
+  margin-left: 14px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
 /* The star that saves the category on screen to the bookshelf. */
 .shelf-bar {
   display: flex;

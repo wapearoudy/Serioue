@@ -602,6 +602,33 @@ pub async fn remove_shelf(state: State<'_, AppState>, id: String) -> AppResult<(
 }
 
 #[tauri::command]
+pub async fn list_highlights(state: State<'_, AppState>) -> AppResult<Vec<crate::store::Highlight>> {
+    Ok(state.store.highlights())
+}
+
+/// The highlights for one article, so the reader can draw them into the text.
+#[tauri::command]
+pub async fn highlights_for(
+    state: State<'_, AppState>,
+    url: String,
+) -> AppResult<Vec<crate::store::Highlight>> {
+    Ok(state.store.highlights_for(&url))
+}
+
+#[tauri::command]
+pub async fn add_highlight(
+    state: State<'_, AppState>,
+    highlight: crate::store::Highlight,
+) -> AppResult<crate::store::Highlight> {
+    state.store.add_highlight(highlight)
+}
+
+#[tauri::command]
+pub async fn remove_highlight(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    state.store.remove_highlight(&id)
+}
+
+#[tauri::command]
 pub async fn list_history(state: State<'_, AppState>, limit: Option<usize>) -> AppResult<Vec<HistoryEntry>> {
     let store = state.store.clone();
     blocking(move || Ok(store.history(limit.unwrap_or(100)))).await

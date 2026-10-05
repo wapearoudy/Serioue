@@ -95,6 +95,17 @@ export interface RepoCollection {
   json_url: string;
 }
 
+export interface Highlight {
+  id: string;
+  url: string;
+  source_id: string;
+  title: string;
+  source_name: string;
+  text: string;
+  note: string;
+  created_at: number;
+}
+
 export interface ShelfEntry {
   id: string;
   source_id: string;
@@ -288,6 +299,14 @@ export const api = {
   addShelf: (entry: ShelfEntry) => invoke<ShelfEntry>("add_shelf", { entry }),
 
   removeShelf: (id: string) => invoke<void>("remove_shelf", { id }),
+
+  listHighlights: () => invoke<Highlight[]>("list_highlights"),
+
+  highlightsFor: (url: string) => invoke<Highlight[]>("highlights_for", { url }),
+
+  addHighlight: (h: Highlight) => invoke<Highlight>("add_highlight", { highlight: h }),
+
+  removeHighlight: (id: string) => invoke<void>("remove_highlight", { id }),
 
   /** Articles started but not finished, newest first. */
   continueReading: () => invoke<ContinueEntry[]>("continue_reading"),

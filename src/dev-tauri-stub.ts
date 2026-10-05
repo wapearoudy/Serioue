@@ -44,6 +44,35 @@ const HANDLERS: Record<string, Handler> = {
     const items = byUrl[url] ?? [];
     return { items, next: null, final_url: url || "/demo/list/all" };
   },
+  list_highlights: () => readStore().highlights ?? [],
+  highlights_for: (args) => {
+    const all = (readStore().highlights ?? []) as Array<Record<string, unknown>>;
+    return all
+      .filter((h) => h.url === args.url)
+      .sort((a, b) => (Number(a.created_at) || 0) - (Number(b.created_at) || 0));
+  },
+  add_highlight: (args) => {
+    const store = readStore();
+    const all = ((store.highlights ?? []) as Array<Record<string, unknown>>).slice();
+    const h = args.highlight as Record<string, unknown>;
+    const text = String(h.text ?? "").trim();
+    if (!text) throw new Error("不能保存空的高亮");
+    const existing = all.find((e) => e.url === h.url && e.text === text);
+    if (existing) return existing;
+    const now = Math.floor(Date.now() / 1000);
+    const newest = all.reduce((m: number, e) => Math.max(m, Number(e.created_at) || 0), 0);
+    const saved = { ...h, id: `h${now}-${all.length}`, text, created_at: Math.max(now, newest + 1) };
+    all.push(saved);
+    writeStore({ ...store, highlights: all });
+    return saved;
+  },
+  remove_highlight: (args) => {
+    const store = readStore();
+    const all = ((store.highlights ?? []) as Array<Record<string, unknown>>).filter(
+      (h) => h.id !== args.id,
+    );
+    writeStore({ ...store, highlights: all });
+  },
   get_progress: (args) => {
     const store = readStore();
     const progress = (store.progress ?? {}) as Record<string, number>;

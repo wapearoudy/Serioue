@@ -23,6 +23,7 @@
 | 阅读进度 | 记住每篇文章读到哪儿，重开自动回到原处 |
 | 继续阅读 | 侧栏顶部列出读到一半的文章，带进度条，点一下接着读 |
 | 书架 | 在任意分类列表点标题下的 ☆ 把**整个分类**收进书架，之后从侧栏「书架」直接回去接着读；读到一半会显示进度 |
+| 划线与笔记 | 选中文字即出现「高亮 / 笔记」；划线随文章保存，下次打开还在原处；侧栏「划线」汇总全部 |
 | 目录与章节 | 标题栏「目录」列出当前列表，当前章高亮；底部上一章/下一章；读到本章末尾自动提示下一章；快捷键 `[` `]` `T` |
 | 源校验 | 分阶段体检每个源：规则 / 首页 / 列表 / 详情 / 搜索，逐项给出可执行的结论 |
 | 收藏 / 历史 / 搜索 | 常用源收藏、阅读历史回溯、单源内搜索 |
@@ -133,6 +134,47 @@ removing one row left: 演示小说源 · 全部
 
 `added_at` 由后端打，不接受前端传值，并且会跨过已有的最大时间戳 —— 否则一秒内保存的两本书
 回来顺序是随机的。
+
+### 划线与笔记
+
+在文章里选中一段文字，选区上方立刻出现「高亮 / 笔记 / 取消」。侧栏的「划线」列出全部，
+每条显示引用、笔记、来源和时间，点一下回到原文。
+
+两条设计约束：
+
+- **存的是引文，不是 DOM 偏移。** 文章每次打开都是重新抓取的，昨天 DOM 里的偏移今天早就指到
+  别的句子上去了。匹配时忽略空白，并且跨节点匹配 —— 源站 HTML 里一句话常常被 `<strong>`、
+  `<a>` 切成好几段（`src/components/highlight.ts`）。画的时候用 `Range.extractContents()`，
+  和鼠标拖选的行为一致。
+- **同一篇里的同一句话只有一条划线。** 同一段文字很容易被选中两次；重复的行比缺一行更糟。
+  身份是 (文章, 引文)，`id` 由后端用 FNV-1a 从这两者派生 —— 不用 `DefaultHasher`，
+  因为它的值要落盘、跨重启必须一致。
+
+划线画不出来是正常情况：源站改了措辞。找不到的划线仍然出现在列表里，只是正文里没有高亮。
+
+### 验证
+
+```bash
+pnpm test:highlight
+```
+
+夹具文章的每一句都被 `<strong>` / `<em>` / `<a>` 切开，所以要匹配的引文**一定跨节点** ——
+按单个文本节点搜索的写法在这里必然失败，而这正是要测的情况。
+
+```
+no toolbar until something is selected
+toolbar after selecting a passage: 高亮 笔记 取消
+the passage is marked in the page: 让人愿意一直读下去
+surrounding text intact across 141 chars
+stored once
+a second passage highlights independently
+re-highlighting the same sentence did not duplicate it
+after a reload the page shows 3 marks: 让人愿意一直读下去 | 成组调整 | 换一台设备
+panel lists 3 highlights, and the note reads "这一段值得回头再看"
+deleting a highlight removed it from the panel and the store
+```
+
+其中 `after a reload … 3 marks` 同时断言了**没有 `<mark>` 套 `<mark>`** —— 每次重绘前先清掉旧的。
 
 ### 验证
 
@@ -396,7 +438,7 @@ pnpm tauri build      # 打包当前平台的安装包
 ```bash
 pnpm dev              # 只启动前端（需要后端命令，无法单独使用）
 cd src-tauri
-cargo test --lib      # 132 个单元测试，不联网
+cargo test --lib      # 138 个单元测试，不联网
 cargo clippy --all-targets
 ```
 

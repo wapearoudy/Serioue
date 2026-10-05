@@ -6,6 +6,7 @@ import { Reader } from "./components/Reader";
 import { RepoBrowser } from "./components/RepoBrowser";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ShelfPanel } from "./components/ShelfPanel";
+import { HighlightsPanel } from "./components/HighlightsPanel";
 import { Sidebar, sourceMeta } from "./components/Sidebar";
 import { UpdateBanner } from "./components/Update";
 import { VerifyPanel } from "./components/VerifyPanel";
@@ -18,6 +19,7 @@ type View =
   | { kind: "reader"; item: ArticleItem }
   | { kind: "history" }
   | { kind: "shelf" }
+  | { kind: "highlights" }
   | { kind: "verify" }
   | { kind: "settings" };
 
@@ -84,6 +86,16 @@ export default function App() {
       .catch(() => setShelf([]));
   }, []);
   useEffect(refreshShelf, [refreshShelf]);
+
+  /** Only the count, for the sidebar tab. */
+  const [highlightCount, setHighlightCount] = useState(0);
+  const refreshHighlightCount = useCallback(() => {
+    api
+      .listHighlights()
+      .then((list) => setHighlightCount(list.length))
+      .catch(() => setHighlightCount(0));
+  }, []);
+  useEffect(refreshHighlightCount, [refreshHighlightCount]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -291,6 +303,8 @@ export default function App() {
         onOpenHistory={() => setView({ kind: "history" })}
         onOpenShelf={() => setView({ kind: "shelf" })}
         shelfCount={shelf.length}
+        onOpenHighlights={() => setView({ kind: "highlights" })}
+        highlightCount={highlightCount}
         onOpenVerify={() => setView({ kind: "verify" })}
         onOpenSettings={() => setView({ kind: "settings" })}
         stats={stats}
@@ -378,6 +392,7 @@ export default function App() {
             articleUrl={article?.final_url || undefined}
             siblings={siblings}
             currentLink={view.kind === "reader" ? view.item.link : undefined}
+            currentSourceId={selected?.id}
             onOpenSibling={openArticle}
             settings={settings}
             onSettingsChange={changeSettings}
@@ -396,6 +411,31 @@ export default function App() {
 
         {view.kind === "shelf" && (
           <ShelfPanel onOpen={openShelfEntry} onClose={() => setView({ kind: "list" })} />
+        )}
+
+        {view.kind === "highlights" && (
+          <HighlightsPanel
+            onOpen={(h) => {
+              // Same shape as a history entry: switch to the source first, so
+              // the category tabs and contents come from the right place.
+              if (h.source_id) {
+                selectSource(h.source_id);
+                void loadSiblingsFor(h.source_id);
+              }
+              void api
+                .loadArticle(h.source_id, h.url, h.title)
+                .then((res) => {
+                  setArticleKind("article");
+                  setArticle(res);
+                  setView({
+                    kind: "reader",
+                    item: { title: h.title, link: h.url, image: "", date: "", kind: "article" },
+                  });
+                })
+                .catch((e) => setError(errorMessage(e)));
+            }}
+            onClose={() => setView({ kind: "list" })}
+          />
         )}
 
         {view.kind === "verify" && (

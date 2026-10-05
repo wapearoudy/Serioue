@@ -113,6 +113,31 @@ pub struct ShelfEntry {
     pub added_at: i64,
 }
 
+/// A passage the reader marked, optionally with a note attached.
+///
+/// `text` is the quoted passage as it read on the page. It is stored rather than
+/// a DOM offset because the same article is re-rendered from a live fetch every
+/// time; an offset into yesterday's DOM would point at the wrong sentence.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Highlight {
+    pub id: String,
+    /// The article the passage belongs to.
+    pub url: String,
+    /// The source it came from, so the passage can be reopened the way history
+    /// is: switch to that source first, then load the article.
+    #[serde(default)]
+    pub source_id: String,
+    pub title: String,
+    pub source_name: String,
+    /// The quoted passage.
+    pub text: String,
+    /// The reader's own note, if any.
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HistoryEntry {
     pub id: String,
@@ -177,6 +202,20 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// A stable id for a highlight, derived from what makes it unique.
+///
+/// FNV-1a rather than `DefaultHasher`: the value is written to disk and must
+/// stay the same across runs, which the standard library explicitly does not
+/// promise for its hasher.
+fn highlight_id(url: &str, text: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in url.as_bytes().iter().chain([0u8].iter()).chain(text.as_bytes()) {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    format!("h{hash:016x}")
+}
+
 fn default_true() -> bool {
     true
 }
@@ -234,6 +273,7 @@ struct Inner {
     collections: Vec<Collection>,
     history: Vec<HistoryEntry>,
     shelf: Vec<ShelfEntry>,
+    highlights: Vec<Highlight>,
     settings: Settings,
     /// Reading position per article URL.
     progress: HashMap<String, Progress>,
@@ -294,6 +334,11 @@ impl Store {
         if let Ok(text) = std::fs::read_to_string(self.path("shelf.json")) {
             if let Ok(list) = serde_json::from_str::<Vec<ShelfEntry>>(&text) {
                 inner.shelf = list;
+            }
+        }
+        if let Ok(text) = std::fs::read_to_string(self.path("highlights.json")) {
+            if let Ok(list) = serde_json::from_str::<Vec<Highlight>>(&text) {
+                inner.highlights = list;
             }
         }
         if let Ok(text) = std::fs::read_to_string(self.path("settings.json")) {
@@ -541,6 +586,61 @@ impl Store {
         let mut inner = self.inner.lock().map_err(|_| AppError::Storage("lock poisoned".into()))?;
         inner.shelf.retain(|e| e.id != id);
         self.write_atomic("shelf.json", &inner.shelf)?;
+        Ok(())
+    }
+
+    /// Every highlight, newest first.
+    pub fn highlights(&self) -> Vec<Highlight> {
+        let Ok(inner) = self.inner.lock() else { return Vec::new() };
+        let mut list = inner.highlights.clone();
+        list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        list
+    }
+
+    /// The highlights belonging to one article, in the order they were made.
+    pub fn highlights_for(&self, url: &str) -> Vec<Highlight> {
+        let Ok(inner) = self.inner.lock() else { return Vec::new() };
+        let mut list: Vec<Highlight> =
+            inner.highlights.iter().filter(|h| h.url == url).cloned().collect();
+        list.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        list
+    }
+
+    /// Save a highlight, or return the existing one with the same passage.
+    ///
+    /// Highlighting the same sentence twice should not produce two rows, so the
+    /// identity is (article, passage) rather than a client-supplied id.
+    pub fn add_highlight(&self, mut h: Highlight) -> AppResult<Highlight> {
+        let mut inner = self.inner.lock().map_err(|_| AppError::Storage("lock poisoned".into()))?;
+        let text = h.text.trim().to_string();
+        if text.is_empty() {
+            return Err(AppError::Storage("不能保存空的高亮".into()));
+        }
+        if text.chars().count() > 2000 {
+            return Err(AppError::Storage("高亮内容过长".into()));
+        }
+        if let Some(existing) = inner.highlights.iter().find(|e| e.url == h.url && e.text == text) {
+            return Ok(existing.clone());
+        }
+        h.text = text;
+        if h.created_at == 0 {
+            h.created_at = now_secs();
+        }
+        // The id is the store's, not the caller's: the frontend has no way to
+        // mint a stable one, and `remove_highlight` is keyed on it. Deriving it
+        // from the identity means the same passage always lands on the same id.
+        if h.id.is_empty() {
+            h.id = highlight_id(&h.url, &h.text);
+        }
+        inner.highlights.push(h.clone());
+        self.write_atomic("highlights.json", &inner.highlights)?;
+        Ok(h)
+    }
+
+    pub fn remove_highlight(&self, id: &str) -> AppResult<()> {
+        let mut inner = self.inner.lock().map_err(|_| AppError::Storage("lock poisoned".into()))?;
+        inner.highlights.retain(|h| h.id != id);
+        self.write_atomic("highlights.json", &inner.highlights)?;
         Ok(())
     }
 
@@ -820,6 +920,110 @@ fn test_dir(tag: &str) -> PathBuf {
         store.remove_shelf("a").unwrap();
         assert!(!store.on_shelf("a"));
         assert!(store.shelf().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn mark(url: &str, text: &str) -> Highlight {
+        Highlight {
+            id: format!("h-{text}"),
+            url: url.into(),
+            source_id: "s".into(),
+            title: "一篇文章".into(),
+            source_name: "demo".into(),
+            text: text.into(),
+            note: String::new(),
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn highlights_survive_a_restart_and_are_scoped_to_their_article() {
+        let (store, dir) = temp_store();
+        store.add_highlight(mark("https://x.com/a", "第一处")).unwrap();
+        store.add_highlight(mark("https://x.com/a", "第二处")).unwrap();
+        store.add_highlight(mark("https://x.com/b", "另一篇")).unwrap();
+
+        assert_eq!(store.highlights_for("https://x.com/a").len(), 2);
+        assert_eq!(store.highlights_for("https://x.com/b").len(), 1);
+        assert!(store.highlights_for("https://x.com/c").is_empty());
+
+        let reopened = Store::new(dir.clone()).unwrap();
+        assert_eq!(reopened.highlights().len(), 3, "highlights did not survive a restart");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn highlighting_the_same_sentence_twice_yields_one_highlight() {
+        // Selecting the same passage again is easy to do, and two identical rows
+        // are worse than one.
+        let (store, dir) = temp_store();
+        let first = store.add_highlight(mark("https://x.com/a", "同一句")).unwrap();
+        let again = store.add_highlight(mark("https://x.com/a", "同一句")).unwrap();
+        assert_eq!(again.id, first.id);
+        assert_eq!(store.highlights_for("https://x.com/a").len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_empty_highlight_is_refused_rather_than_stored() {
+        // A selection can be a stray click on a gap between paragraphs.
+        let (store, dir) = temp_store();
+        assert!(store.add_highlight(mark("https://x.com/a", "   ")).is_err());
+        assert!(store.highlights().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_same_sentence_in_two_articles_is_two_highlights() {
+        let (store, dir) = temp_store();
+        store.add_highlight(mark("https://x.com/a", "重复的句子")).unwrap();
+        store.add_highlight(mark("https://x.com/b", "重复的句子")).unwrap();
+        assert_eq!(store.highlights().len(), 2, "identity must be (article, passage), not passage");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_highlight_gets_a_stable_id_so_it_can_be_removed_later() {
+        // `remove_highlight` is keyed on the id, so an empty or unstable id would
+        // make highlights undeletable — and the value is written to disk, so it
+        // has to survive a restart.
+        let a = highlight_id("https://x.com/a", "同一句");
+        assert!(!a.is_empty());
+        assert_eq!(a, highlight_id("https://x.com/a", "同一句"), "the id is not stable");
+        assert_ne!(
+            a,
+            highlight_id("https://x.com/b", "同一句"),
+            "the url must be part of the id"
+        );
+        assert_ne!(
+            a,
+            highlight_id("https://x.com/a", "另一句"),
+            "the text must be part of the id"
+        );
+
+        let (store, dir) = temp_store();
+        let mut blank = mark("https://x.com/a", "甲");
+        blank.id = String::new();
+        let saved = store.add_highlight(blank).unwrap();
+        assert!(!saved.id.is_empty(), "the store must mint an id when the caller sends none");
+
+        let reopened = Store::new(dir.clone()).unwrap();
+        assert_eq!(
+            reopened.highlights()[0].id, saved.id,
+            "the id changed across a restart, so removal would target the wrong row"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn removing_a_highlight_leaves_the_others_alone() {
+        let (store, dir) = temp_store();
+        store.add_highlight(mark("https://x.com/a", "甲")).unwrap();
+        let b = store.add_highlight(mark("https://x.com/a", "乙")).unwrap();
+        store.remove_highlight(&b.id).unwrap();
+        let left = store.highlights_for("https://x.com/a");
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].text, "甲");
         let _ = std::fs::remove_dir_all(dir);
     }
 

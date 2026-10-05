@@ -18,6 +18,7 @@
     "test:lyrics": "node scripts/lyrics-test.mjs",
     "test:reader": "node scripts/reader-test.mjs",
     "test:shelf": "node scripts/shelf-test.mjs",
+    "test:highlight": "node scripts/highlight-test.mjs",
     "demo:video": "node scripts/make-demo-video.mjs",
     "test:video": "node scripts/video-test.mjs",
     "test:episodes": "node scripts/episode-test.mjs"

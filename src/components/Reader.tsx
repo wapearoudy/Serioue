@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type ArticleItem } from "../api";
+import { api, errorMessage, type ArticleItem, type Highlight } from "../api";
 import { Gallery, extractImages, extractSubtitles, sanitize } from "./media";
 import { isPlayable } from "./VideoPlayer";
 import { VideoPlayer } from "./VideoPlayer";
 import { MusicPlayer, attachLyrics, extractAudio, isAudioUrl, type Track } from "./MusicPlayer";
+import { clearHighlights, paintHighlight } from "./highlight";
 import { ReaderSettings } from "./ReaderSettings";
 import { Banner, Spinner } from "./ui";
 import type { ArticleResponse, Settings } from "../api";
@@ -27,6 +28,8 @@ type Props = {
   siblings?: ArticleItem[];
   /** The link of the entry being read, so the contents can highlight it. */
   currentLink?: string;
+  /** The source being read, so a highlight can be reopened from its list. */
+  currentSourceId?: string;
   onOpenSibling?: (item: ArticleItem) => void;
   settings: Settings | null;
   onSettingsChange: (patch: Partial<Settings>) => void;
@@ -43,6 +46,7 @@ export function Reader({
   articleUrl,
   siblings = [],
   currentLink,
+  currentSourceId,
   onOpenSibling,
   settings,
   onSettingsChange,
@@ -57,6 +61,86 @@ export function Reader({
   const [progress, setProgress] = useState(0);
   const restored = useRef<string | null>(null);
   const savedAt = useRef(0);
+
+  // -- highlights ------------------------------------------------------------
+  // A highlight is the quoted passage, not a DOM offset: the page is fetched
+  // again every time it opens, so an offset from yesterday would point at the
+  // wrong sentence.
+  const rich = useRef<HTMLDivElement>(null);
+  const [marks, setMarks] = useState<Highlight[]>([]);
+  const markUrl = article?.final_url || articleUrl || "";
+  useEffect(() => {
+    if (!markUrl) {
+      setMarks([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .highlightsFor(markUrl)
+      .then((list) => {
+        if (!cancelled) setMarks(list);
+      })
+      .catch(() => {
+        // Highlights are an extra; failing to load them must not block reading.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [markUrl]);
+
+  // Repaint whenever the DOM is replaced or the set of highlights changes.
+  // Clearing first keeps a re-run from nesting marks inside marks. Declared
+  // after `view` below, since that is what replaces the DOM.
+
+  /** The passage the reader just selected, and where to put the buttons. */
+  const [pending, setPending] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [markError, setMarkError] = useState<string | null>(null);
+
+  const captureSelection = () => {
+    const selection = window.getSelection();
+    const text = selection?.toString().replace(/\s+/g, " ").trim() ?? "";
+    // A click in the margin, or a drag that caught a whole block, should not
+    // offer to save an empty or enormous highlight.
+    if (!selection || selection.rangeCount === 0 || text.length < 2) {
+      setPending(null);
+      return;
+    }
+    const el = rich.current;
+    if (el && !el.contains(selection.anchorNode)) {
+      setPending(null);
+      return;
+    }
+    const box = selection.getRangeAt(0).getBoundingClientRect();
+    setPending({ text, x: box.left + box.width / 2, y: box.top });
+  };
+
+  const saveHighlight = async (withNote: boolean) => {
+    if (!pending || !markUrl) return;
+    let note = "";
+    if (withNote) {
+      const typed = window.prompt("给这段加一句笔记（可以留空）", "");
+      if (typed === null) return;
+      note = typed.trim();
+    }
+    try {
+      const saved = await api.addHighlight({
+        id: "",
+        url: markUrl,
+        source_id: currentSourceId ?? "",
+        title: article?.title ?? "",
+        source_name: sourceName,
+        text: pending.text,
+        note,
+        created_at: 0,
+      });
+      setMarks((prev) => (prev.some((m) => m.id === saved.id) ? prev : [...prev, saved]));
+      window.getSelection()?.removeAllRanges();
+      setPending(null);
+    } catch (e) {
+      setPending(null);
+      setMarkError(errorMessage(e));
+    }
+  };
 
   // Chapter navigation is only meaningful when the entry came from a list.
   const position = useMemo(() => {
@@ -144,6 +228,15 @@ export function Reader({
 
     return { rich, video, images, text, rendered, tracks: withLyrics, subtitles };
   }, [article, mode, itemKind]);
+
+  // Repaint whenever the DOM is replaced or the set of highlights changes.
+  // Clearing first keeps a re-run from nesting marks inside marks.
+  useEffect(() => {
+    const el = rich.current;
+    if (!el) return;
+    clearHighlights(el);
+    marks.forEach((m) => paintHighlight(el, m.text, m.id));
+  }, [view?.rich, marks]);
 
   // How far down the readable area the user is.
   const readRatio = () => {
@@ -452,6 +545,8 @@ export function Reader({
             {(view.rendered === "rich" || view.rendered === "video") && (
               <div
                 className="reader-rich"
+                ref={rich}
+                onMouseUp={captureSelection}
                 dangerouslySetInnerHTML={{ __html: view.rich }}
               />
             )}
@@ -476,6 +571,30 @@ export function Reader({
           </article>
         )}
       </div>
+
+      {markError && <Banner text={markError} onClose={() => setMarkError(null)} />}
+
+      {pending && (
+        <div
+          className="mark-pop"
+          style={{ left: pending.x, top: pending.y }}
+          role="toolbar"
+          aria-label="划线操作"
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          <button onClick={() => void saveHighlight(false)}>高亮</button>
+          <button onClick={() => void saveHighlight(true)}>笔记</button>
+          <button
+            className="ghost"
+            onClick={() => {
+              window.getSelection()?.removeAllRanges();
+              setPending(null);
+            }}
+          >
+            取消
+          </button>
+        </div>
+      )}
     </>
   );
 }
