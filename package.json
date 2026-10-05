@@ -17,7 +17,8 @@
     "test:music": "node scripts/music-player-test.mjs",
     "test:reader": "node scripts/reader-test.mjs",
     "demo:video": "node scripts/make-demo-video.mjs",
-    "test:video": "node scripts/video-test.mjs"
+    "test:video": "node scripts/video-test.mjs",
+    "test:episodes": "node scripts/episode-test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

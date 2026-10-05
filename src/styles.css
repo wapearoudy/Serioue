@@ -728,6 +728,64 @@ select:focus {
   border-top: 1px solid var(--border);
 }
 
+/* Episode picker shown directly under a video, where scrolling the page to
+   the chapter buttons is inconvenient. */
+.episodes {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 6px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.episodes > button {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 6px;
+}
+
+.episodes > button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.episodes-label {
+  font-size: 12px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.episodes-select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.episodes-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.episodes-count {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .chapter-offer {
   display: flex;
   align-items: center;

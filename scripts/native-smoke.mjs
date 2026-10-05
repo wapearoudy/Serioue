@@ -752,8 +752,10 @@ try {
         "the video player did not render",
       );
       // hls.js has to attach inside the packaged WebView, which is the whole
-      // point of this leg.
-      await page.waitForSelector(".player-extras", { timeout: 30000 });
+      // point of this leg. The extras bar itself renders immediately, so wait
+      // for the quality control specifically — until the manifest parses the
+      // only button in there is the volume one.
+      await page.waitForSelector(".player-extras button:has-text('画质')", { timeout: 30000 });
       const quality = (await page.locator(".player-extras button").first().innerText()).trim();
       console.log(`  video player rendered, ${quality}`);
       assert.ok(quality.includes("画质"), `quality control missing (${quality})`);

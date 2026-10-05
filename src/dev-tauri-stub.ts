@@ -29,6 +29,35 @@ const HANDLERS: Record<string, Handler> = {
     const progress = (store.progress ?? {}) as Record<string, number>;
     return progress[String(args.url)] ?? 0;
   },
+  get_progress_many: (args) => {
+    const store = readStore();
+    const progress = (store.progress ?? {}) as Record<string, number>;
+    const out: Record<string, number> = {};
+    for (const url of (args.urls as string[]) ?? []) out[url] = progress[url] ?? 0;
+    return out;
+  },
+  // A five-episode series, so the reader's episode picker has real siblings to
+  // work with. `?ep=N` picks the episode.
+  load_article: (args) => {
+    const url = String(args.url ?? "");
+    let ep = 1;
+    try {
+      ep = Number(new URL(url).searchParams.get("ep")) || 1;
+    } catch {
+      /* not a URL we can parse; episode 1 is a safe default */
+    }
+    return {
+      title: `第 ${ep} 集 · 示例剧集`,
+      final_url: url,
+      html:
+        `<video src="/demo/hls/master.m3u8" controls poster="/demo/poster.png"></video>` +
+        `<track src="/demo/hls/subs.vtt" kind="subtitles" srclang="zh" label="中文" default>` +
+        `<p>这是第 ${ep} 集的简介,用于检查正文与播放器是否同时显示。</p>`,
+      text: `这是第 ${ep} 集的简介,用于检查正文与播放器是否同时显示。`,
+      media: ["/demo/hls/master.m3u8"],
+      audio: [],
+    };
+  },
   save_progress: (args) => {
     const store = readStore();
     const progress = { ...((store.progress ?? {}) as Record<string, number>) };

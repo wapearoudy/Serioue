@@ -8,6 +8,12 @@ import { ReaderSettings } from "./ReaderSettings";
 import { Banner, Spinner } from "./ui";
 import type { ArticleResponse, Settings } from "../api";
 
+/** Keeps an episode title readable inside a fixed-width dropdown. */
+function truncate(text: string, max: number): string {
+  const clean = text.trim();
+  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
 type Props = {
   loading: boolean;
   error: string | null;
@@ -379,6 +385,52 @@ export function Reader({
                 onVolumeChange={(v) => onSettingsChange({ player_volume: v })}
                 onRateChange={(r) => onSettingsChange({ player_rate: r })}
               />
+            )}
+
+            {view.rendered === "video" && view.video && siblings.length > 1 && onOpenSibling && (
+              <div className="episodes">
+                <button
+                  disabled={!prevChapter}
+                  onClick={() => prevChapter && onOpenSibling(prevChapter)}
+                  title={prevChapter ? prevChapter.title || "上一集" : "已是第一集"}
+                  aria-label="上一集"
+                >
+                  ‹
+                </button>
+                <span className="episodes-label">选集</span>
+                <select
+                  className="episodes-select"
+                  value={position >= 0 ? position : -1}
+                  onChange={(e) => {
+                    const item = siblings[Number(e.target.value)];
+                    if (item) onOpenSibling(item);
+                  }}
+                  aria-label="选择剧集"
+                >
+                  {position < 0 && <option value={-1}>选择剧集</option>}
+                  {siblings.map((item, i) => (
+                    <option key={`${item.link}-${i}`} value={i}>
+                      {/* Many sources already number their episodes in the
+                          title, so the position is shown by the counter beside
+                          the picker rather than repeated in every entry. */}
+                      {truncate(item.title || item.link, 40)}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  disabled={!nextChapter}
+                  onClick={() => nextChapter && onOpenSibling(nextChapter)}
+                  title={nextChapter ? nextChapter.title || "下一集" : "已是最后一集"}
+                  aria-label="下一集"
+                >
+                  ›
+                </button>
+                {position >= 0 && (
+                  <span className="episodes-count">
+                    第 {position + 1} / {siblings.length} 集
+                  </span>
+                )}
+              </div>
             )}
 
             {view.rendered === "gallery" && <Gallery images={view.images} />}

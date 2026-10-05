@@ -16,7 +16,7 @@
 | 合集导入 | 从源仓库浏览 90+ 共享合集，一键导入；也支持粘贴 JSON 地址或拖入 JSON 文件 |
 | 分类目录 | 自动解析源的 `sortUrl`，渲染成分类标签页（如「国产 / 欧美 / 福利」）；切换源时回到第一个分类 |
 | 文章列表 | 按源规则解析列表，支持分页与无限滚动 |
-| 视频播放 | HLS (`.m3u8`) 在 Windows 上也能播 —— 内置 hls.js，Safari 走原生；多码率可切画质、可调倍速 |
+| 视频播放 | HLS (`.m3u8`) 在 Windows 上也能播 —— 内置 hls.js，Safari 走原生；多码率可切画质、可调倍速、播放器下方常驻**选集**栏 |
 | 阅读器 | 视频源 → 播放器；图集 → 可缩放画廊；音乐 → 队列式播放器；其他 → 原文或纯文本 |
 | 阅读设置 | 字号、行距、字体、背景（夜间/白日/羊皮/护眼）、版心宽度，改完立即生效并记住 |
 | 播放偏好 | 音乐和视频的音量、视频倍速跨启动保留；视频有独立音量条 |
@@ -131,6 +131,8 @@ pnpm test:reader    # Playwright 驱动真实浏览器
 - **续播**：记住看到的位置，重开时提示「上次看到 6:24」，可选继续播放或从头开始
 - **字幕**：自动读取页面里的 `<track kind="subtitles">` 并挂到播放器上
 - **连播**：一个视频源往往就是剧集列表，放完后提示「6 秒后播放：第 2 集」，可立即播放或取消
+- **选集**：播放器正下方常驻一栏 —— `‹` 上一集、剧集下拉、`›` 下一集，右边显示「第 3 / 12 集」。
+  不用翻到页面底部找上下章按钮，也不用开目录；到头时对应箭头置灰而不是绕回第一集
 - 失败分级处理：网络错误自动重试、解码错误自动恢复、其余给出明确原因 —— 不再一律甩锅给 VLC
 
 播放控制条用浏览器原生的（无障碍、可访问性更好），画质/倍速/全屏放在覆盖层。
@@ -169,6 +171,23 @@ after reload the player offers: 上次看到 0:06
 ```
 
 `readyState 4` 表示分片已完整解码，**是真的在播**。
+
+选集那一栏挂在真正的 `Reader` 组件上验证 —— 旧的 `reader-preview.html` 是**手抄**的阅读器标记，
+改坏了也不会报错，所以另开了一个 `video-reader-preview.html` 直接挂载真组件：
+
+```bash
+pnpm test:episodes
+```
+
+```
+episode picker rendered under the player
+counter reads 第 3 / 5 集
+dropdown opened on 第 3 集 · 示例剧集
+choosing the dropdown moved the reader to 第 5 集 · 示例剧集
+both ends disable their arrow instead of wrapping around
+‹ › step one episode at a time
+a standalone video gets neither a picker nor chapter buttons
+```
 
 > 未能验证的：真实直播流的解码 —— 需要能访问外网的机器。这里验证的是清单解析、画质切换、
 > 倍速写入和分片播放本身。
