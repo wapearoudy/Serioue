@@ -280,6 +280,12 @@ export const api = {
   getProgressMany: (urls: string[]) =>
     invoke<Record<string, number>>("get_progress_many", { urls }),
 
+  /**
+   * Fetch a text file the webview cannot fetch itself (CORS). Used for `.lrc`
+   * lyrics, which live on the music host.
+   */
+  fetchText: (url: string) => invoke<string>("fetch_text", { url }),
+
   listCollections: () => invoke<Collection[]>("list_collections"),
 
   removeCollection: (url: string) => invoke<void>("remove_collection", { url }),

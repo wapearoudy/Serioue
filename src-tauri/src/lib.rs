@@ -67,6 +67,7 @@ pub fn run() {
             commands::check_all,
             commands::cancel_check,
             commands::list_history,
+            commands::fetch_text,
             commands::clear_history,
             commands::render_probe,
             commands::render_html,

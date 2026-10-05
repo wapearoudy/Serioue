@@ -568,6 +568,19 @@ pub async fn render_probe(
         })
 }
 
+/// Fetch a small text file the webview cannot fetch for itself.
+///
+/// A `.lrc` lives on the same host as the music, which sends no CORS headers, so
+/// `fetch` from the app origin is blocked. The backend already has a client
+/// carrying the right user agent and cookie jar, so it does the work.
+#[tauri::command]
+pub async fn fetch_text(url: String) -> AppResult<String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(AppError::other("地址必须是 http(s) 链接"));
+    }
+    blocking(move || Ok(crate::engine::fetch::fetch(None, &url)?.body)).await
+}
+
 #[tauri::command]
 pub async fn list_history(state: State<'_, AppState>, limit: Option<usize>) -> AppResult<Vec<HistoryEntry>> {
     let store = state.store.clone();
@@ -804,6 +817,16 @@ pub async fn current_version(app: tauri::AppHandle) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_text_refuses_anything_but_http() {
+        // The command exists to dodge CORS for `.lrc` files, not to become a
+        // general-purpose reader of local paths.
+        let r = tauri::async_runtime::block_on(fetch_text("file:///C:/Windows/win.ini".into()));
+        assert!(r.is_err(), "a file:// URL was accepted");
+        let r = tauri::async_runtime::block_on(fetch_text("appdata://secrets".into()));
+        assert!(r.is_err(), "a custom scheme was accepted");
+    }
 
     #[test]
     fn player_preferences_are_clamped() {

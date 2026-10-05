@@ -39,8 +39,10 @@ try {
   await page.waitForSelector(".player-wrap video", { timeout: 15000 });
 
   // hls.js attaches asynchronously; the quality button only appears once the
-  // manifest has parsed and levels are known.
-  await page.waitForSelector(".player-extras", { timeout: 20000 });
+  // manifest has parsed and levels are known. The extras bar itself renders
+  // immediately, so waiting for it is not enough — the first button would still
+  // be the volume one.
+  await page.waitForSelector(".player-extras button:has-text('画质')", { timeout: 20000 });
   const qualityLabel = (await page.locator(".player-extras button").first().innerText()).trim();
   console.log(`  manifest parsed, quality control reads "${qualityLabel}"`);
   assert.ok(qualityLabel.includes("画质"), `unexpected control label: ${qualityLabel}`);

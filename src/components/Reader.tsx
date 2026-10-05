@@ -3,7 +3,7 @@ import { api, type ArticleItem } from "../api";
 import { Gallery, extractImages, extractSubtitles, sanitize } from "./media";
 import { isPlayable } from "./VideoPlayer";
 import { VideoPlayer } from "./VideoPlayer";
-import { MusicPlayer, extractAudio, isAudioUrl, type Track } from "./MusicPlayer";
+import { MusicPlayer, attachLyrics, extractAudio, isAudioUrl, type Track } from "./MusicPlayer";
 import { ReaderSettings } from "./ReaderSettings";
 import { Banner, Spinner } from "./ui";
 import type { ArticleResponse, Settings } from "../api";
@@ -138,7 +138,11 @@ export function Reader({
       }
     }
 
-    return { rich, video, images, text, rendered, tracks, subtitles };
+    // Lyric files are linked next to the audio; attach the matching one to each
+    // track so the player can follow along.
+    const withLyrics = attachLyrics(tracks, article.html, article.final_url);
+
+    return { rich, video, images, text, rendered, tracks: withLyrics, subtitles };
   }, [article, mode, itemKind]);
 
   // How far down the readable area the user is.

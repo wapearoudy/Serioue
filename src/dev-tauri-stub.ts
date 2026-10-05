@@ -69,6 +69,13 @@ const HANDLERS: Record<string, Handler> = {
     writeStore({ ...readStore(), settings: args.settings });
   },
   current_version: () => "0.1.0",
+  // Lyrics in the browser preview. The packaged app goes through the backend,
+  // which is where the CORS problem actually lives.
+  fetch_text: async (args) => {
+    const res = await fetch(String(args.url));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+  },
 };
 
 export function installDevTauriStub() {

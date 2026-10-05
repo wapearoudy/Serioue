@@ -732,6 +732,17 @@ try {
         `music volume was not persisted (${musicPrefs.player_volume})`,
       );
       console.log(`  music volume persisted: ${musicPrefs.player_volume}`);
+
+      // -- lyrics -----------------------------------------------------------
+      // The lyric host sends no CORS headers, so this leg is the only place the
+      // backend `fetch_text` path is exercised: the packaged WebView cannot
+      // load the file itself.
+      await page.waitForSelector(".music-lyrics", { timeout: 20000 });
+      const lyricLines = await page.locator(".music-lyrics button").count();
+      assert.ok(lyricLines > 1, `lyrics did not load in the packaged app (${lyricLines} lines)`);
+      const lyricText = (await page.locator(".music-lyrics button").first().innerText()).trim();
+      console.log(`  lyrics loaded through the backend: ${lyricLines} lines, first is "${lyricText}"`);
+      console.log(`  lyric fetch hit the network path, not the webview`);
       await page.screenshot({ path: path.join(outDir, "native-music.png") });
 
       // -- video ------------------------------------------------------------

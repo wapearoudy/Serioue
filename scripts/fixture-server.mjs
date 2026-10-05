@@ -25,6 +25,7 @@ const TYPES = {
   ".ts": "video/mp2t",
   ".vtt": "text/vtt",
   ".wav": "audio/wav",
+  ".lrc": "text/plain; charset=utf-8",
   ".mp4": "video/mp4",
   ".json": "application/json",
 };
@@ -37,7 +38,12 @@ function musicPage(base) {
       // Distinct hrefs: the engine de-duplicates links, so five identical ones
       // would collapse to a single entry and look like a single-page source.
       `<li><a href="/music.html?t=${i + 1}">第 ${i + 1} 首 测试曲目</a>` +
-      `<audio src="${base}/demo/track-${(i % 3) + 1}.wav"></audio></li>`,
+      // The lyric link sits next to the audio the way a real music page puts
+      // it, so the pairing in `attachLyrics` is exercised end to end. Only the
+      // first two tracks have one; the rest must come through with no panel.
+      `<audio src="${base}/demo/track-${(i % 3) + 1}.wav"></audio>` +
+      (i < 2 ? `<a href="${base}/demo/track-${(i % 3) + 1}.lrc">歌词</a>` : "") +
+      `</li>`,
   ).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><title>音乐测试页</title></head>
 <body><h1>音乐测试页</h1><ul>${links}</ul></body></html>`;

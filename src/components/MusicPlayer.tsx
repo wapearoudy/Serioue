@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "../api";
+import { lineAt, parseLrc, type LyricLine } from "./lyrics";
 
 /** One playable track. */
 export type Track = {
@@ -6,6 +8,8 @@ export type Track = {
   title: string;
   /** Cover art, when the page offered one. */
   cover?: string;
+  /** A `.lrc` file belonging to this track, when the page linked one. */
+  lyricUrl?: string;
 };
 
 type Props = {
@@ -79,6 +83,55 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
 
   const total = queue.length;
   const track = queue[index];
+
+  /**
+   * Lyrics for the current track, fetched through the backend because the lyric
+   * host sends no CORS headers. A track without lyrics, a failed fetch and an
+   * empty file are all the same to the user: no lyric panel.
+   */
+  const [lyrics, setLyrics] = useState<LyricLine[] | null>(null);
+  const lyricUrl = track?.lyricUrl;
+  useEffect(() => {
+    if (!lyricUrl) {
+      setLyrics(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .fetchText(lyricUrl)
+      .then((raw) => {
+        if (cancelled) return;
+        const lines = parseLrc(raw);
+        setLyrics(lines.length > 0 ? lines : null);
+      })
+      .catch(() => {
+        // Missing lyrics are the normal case, not an error worth reporting.
+        if (!cancelled) setLyrics(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [lyricUrl]);
+
+  /** Which line is showing now; -1 before the first timestamp. */
+  const lyricIndex = lyrics ? lineAt(lyrics, position) : -1;
+
+  // Keep the current line in view. A lyric column that has scrolled past the
+  // song is worse than no lyrics at all, so the active line is centred on every
+  // change. A manual scroll wins for a few seconds — otherwise dragging the
+  // panel away would be fought by the very next line.
+  const lyricsBox = useRef<HTMLDivElement>(null);
+  const autoScrolling = useRef(false);
+  const userScrolledAt = useRef(0);
+  useEffect(() => {
+    if (lyricIndex < 0) return;
+    if (Date.now() - userScrolledAt.current < 3000) return;
+    const box = lyricsBox.current;
+    const line = box?.children[lyricIndex] as HTMLElement | undefined;
+    if (!box || !line) return;
+    autoScrolling.current = true;
+    box.scrollTop = line.offsetTop - box.clientHeight / 2 + line.clientHeight / 2;
+  }, [lyricIndex]);
 
   /** Take a track out, keeping the current one playing if it is not this one. */
   const removeTrack = useCallback((at: number) => {
@@ -338,6 +391,34 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
 
       {error && <div className="music-error">{error}</div>}
 
+      {lyrics && (
+        <div
+          className="music-lyrics"
+          aria-label="歌词"
+          ref={lyricsBox}
+          onScroll={() => {
+            // Our own scroll fires this too; only a real drag should hold off
+            // the auto-follow.
+            if (autoScrolling.current) {
+              autoScrolling.current = false;
+              return;
+            }
+            userScrolledAt.current = Date.now();
+          }}
+        >
+          {lyrics.map((line, i) => (
+            <button
+              key={`${line.time}-${i}`}
+              className={i === lyricIndex ? "now" : ""}
+              onClick={() => seek(line.time)}
+              title={formatTime(line.time)}
+            >
+              {line.text || "♪"}
+            </button>
+          ))}
+        </div>
+      )}
+
       {total > 0 && (
         <div className="music-queue-head">
           <span>播放队列 · {total} 首</span>
@@ -408,4 +489,55 @@ export function extractAudio(html: string, base: string): string[] {
   };
   doc.querySelectorAll("audio source[src], audio[src]").forEach((el) => push(el.getAttribute("src")));
   return out;
+}
+
+/** `song-01.mp3` -> `song01`, so a link and a track can be compared. */
+function lyricKey(url: string): string {
+  const name = url.split(/[?#]/)[0].split("/").pop() ?? "";
+  return name
+    .replace(/\.(lrc|mp3|flac|m4a|aac|wav|ogg|opus)$/i, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9一-龥]/g, "");
+}
+
+/**
+ * Pair each track with a lyric file linked on the same page.
+ *
+ * Music pages put lyrics next to the audio in three shapes: an `<a>` whose href
+ * ends in `.lrc`, a `data-lrc` attribute, or a single file meant for the whole
+ * album. Matching is by filename, and only the unambiguous single-file case is
+ * accepted without it — attaching the wrong lyrics to a track is worse than
+ * showing none.
+ */
+export function attachLyrics(tracks: Track[], html: string, base: string): Track[] {
+  if (tracks.length === 0) return tracks;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+
+  const candidates: string[] = [];
+  const add = (raw: string | null) => {
+    if (!raw || raw.startsWith("data:")) return;
+    let url: string;
+    try {
+      url = new URL(raw, base).toString();
+    } catch {
+      url = raw;
+    }
+    if (/\.lrc(\?|#|$)/i.test(url) && !candidates.includes(url)) candidates.push(url);
+  };
+  doc.querySelectorAll("a[href], [data-lrc], link[rel=lyrics][href]").forEach((el) => {
+    add(el.getAttribute("data-lrc") ?? el.getAttribute("href"));
+  });
+  if (candidates.length === 0) return tracks;
+
+  const byKey = new Map<string, string>();
+  for (const c of candidates) byKey.set(lyricKey(c), c);
+
+  const single = tracks.length === 1 && candidates.length === 1 ? candidates[0] : null;
+
+  return tracks.map((t) => {
+    if (t.lyricUrl) return t;
+    const match = byKey.get(lyricKey(t.url));
+    const chosen = match ?? single;
+    return chosen ? { ...t, lyricUrl: chosen } : t;
+  });
 }

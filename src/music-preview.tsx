@@ -6,12 +6,14 @@
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import "./dev-tauri-stub";
 import { MusicPlayer, formatTime, isAudioUrl } from "./components/MusicPlayer";
 import "./styles.css";
 
 const tracks = [
-  { url: "/demo/track-1.wav", title: "第一首 · 测试音" },
-  { url: "/demo/track-2.wav", title: "第二首 · 测试音" },
+  // Lyrics for the first two, none for the third, so all three cases are visible.
+  { url: "/demo/track-1.wav", title: "第一首 · 测试音", lyricUrl: "/demo/track-1.lrc" },
+  { url: "/demo/track-2.wav", title: "第二首 · 测试音", lyricUrl: "/demo/track-2.lrc" },
   { url: "/demo/track-3.wav", title: "第三首 · 测试音" },
 ];
 

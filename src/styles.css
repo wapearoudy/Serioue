@@ -1621,6 +1621,44 @@ select:focus {
   color: #f0a8a4;
 }
 
+/* Lyrics: a scrolling column under the controls, the current line highlighted.
+   Each line is a button so it can seek, which is what a listener expects from
+   every player that shows lyrics at all. */
+.music-lyrics {
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: 10px;
+  padding: 6px 2px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+  scroll-behavior: smooth;
+}
+
+.music-lyrics button {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-faint);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.12s ease-out;
+}
+
+.music-lyrics button:hover {
+  color: var(--text-dim);
+}
+
+.music-lyrics button.now {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
 .music-queue {
   list-style: none;
   margin: 0;
