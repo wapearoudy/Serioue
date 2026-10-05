@@ -87,6 +87,11 @@ jobs:
       # tauri-action builds, signs and publishes the release in one step.
       # The signing key must be added as a repository secret named
       # TAURI_SIGNING_PRIVATE_KEY (see README).
+      #
+      # The release is published straight away (releaseDraft: false). It used to
+      # be a draft, which needed a human to press "Publish release" by hand --
+      # and that hand step is how v0.1.2 ended up published with nothing but the
+      # source archives on it. Pushing the tag is now the only step.
       - name: Build, sign and publish
         uses: tauri-apps/tauri-action@v0
         env:
@@ -97,9 +102,39 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Serious ${{ github.ref_name }}"
           releaseBody: "See CHANGELOG for details."
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      # A run can finish green while the release itself carries nothing, which
+      # is exactly what v0.1.2 did: the tag published, but only the source
+      # archives were attached, so the updater endpoint 404'd and nobody could
+      # download anything. This step turns that silent failure into a red run.
+      - name: Verify the release carries updater artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -uo pipefail
+          ok=0
+          for attempt in $(seq 1 12); do
+            names=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" --jq '.assets[].name' 2>/dev/null)
+            has_manifest=0
+            case "$names" in *latest.json*) has_manifest=1 ;; esac
+            sigs=$(printf '%s\n' "$names" | grep -c '\.sig$')
+            echo "attempt $attempt: latest.json=$has_manifest sigs=$sigs"
+            if [ "$has_manifest" = "1" ] && [ "$sigs" -gt 0 ]; then
+              ok=1
+              printf '%s\n' "$names"
+              break
+            fi
+            sleep 10
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::Release $TAG is published without updater artifacts. latest.json and at least one .sig must be attached, otherwise the app cannot be installed or updated from it."
+            exit 1
+          fi
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
