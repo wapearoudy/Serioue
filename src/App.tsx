@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errorMessage, events, type ArticleItem, type ArticleResponse, type Category, type HistoryEntry, type SourceSummary, type Stats, type UpdateInfo } from "./api";
+import { api, errorMessage, events, shelfId, type ArticleItem, type ArticleResponse, type Category, type HistoryEntry, type ShelfEntry, type SourceSummary, type Stats, type UpdateInfo } from "./api";
 import { ArticleList } from "./components/ArticleList";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { Reader } from "./components/Reader";
 import { RepoBrowser } from "./components/RepoBrowser";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { ShelfPanel } from "./components/ShelfPanel";
 import { Sidebar, sourceMeta } from "./components/Sidebar";
 import { UpdateBanner } from "./components/Update";
 import { VerifyPanel } from "./components/VerifyPanel";
@@ -16,6 +17,7 @@ type View =
   | { kind: "list" }
   | { kind: "reader"; item: ArticleItem }
   | { kind: "history" }
+  | { kind: "shelf" }
   | { kind: "verify" }
   | { kind: "settings" };
 
@@ -71,6 +73,17 @@ export default function App() {
   // Auto-update: the backend checks on startup and emits when one is found.
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [updateDismissed, setUpdateDismissed] = useState(false);
+
+  // The bookshelf lives in App because the list header's star, the shelf panel
+  // and the sidebar count all have to agree about what is saved.
+  const [shelf, setShelf] = useState<ShelfEntry[]>([]);
+  const refreshShelf = useCallback(() => {
+    api
+      .listShelf()
+      .then(setShelf)
+      .catch(() => setShelf([]));
+  }, []);
+  useEffect(refreshShelf, [refreshShelf]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -213,6 +226,60 @@ export default function App() {
 
   const selected = sources.find((s) => s.id === selectedId) ?? null;
 
+  /** Save or unsave the category the list is showing, as one "book". */
+  const toggleShelf = useCallback(
+    (sourceId: string, sourceName: string, categoryName: string, first?: ArticleItem) => {
+      const id = shelfId(sourceId, categoryName);
+      const saved = shelf.some((e) => e.id === id);
+      const done = saved
+        ? api.removeShelf(id)
+        : api.addShelf({
+            id,
+            source_id: sourceId,
+            source_name: sourceName,
+            category: categoryName,
+            // A list with nothing in it has no entry point yet; the shelf row still
+            // works, it just opens an empty list.
+            title: `${sourceName} · ${categoryName}`,
+            url: first?.link ?? "",
+            kind: first?.kind ?? "",
+            added_at: 0,
+          });
+      done.then(refreshShelf).catch((e) => setError(errorMessage(e)));
+    },
+    [shelf, refreshShelf],
+  );
+
+  /** Open a shelf entry: switch source, then open the stored item. */
+  const openShelfEntry = useCallback(
+    (entry: ShelfEntry) => {
+      selectSource(entry.source_id);
+      void loadSiblingsFor(entry.source_id);
+      if (!entry.url) {
+        setView({ kind: "list" });
+        return;
+      }
+      void api
+        .loadArticle(entry.source_id, entry.url, entry.title)
+        .then((res) => {
+          setArticleKind(entry.kind || "article");
+          setArticle(res);
+          setView({
+            kind: "reader",
+            item: {
+              title: entry.title,
+              link: entry.url,
+              image: "",
+              date: "",
+              kind: entry.kind || "article",
+            },
+          });
+        })
+        .catch((e) => setError(errorMessage(e)));
+    },
+    [],
+  );
+
   return (
     <div className="app">
       <Sidebar
@@ -222,6 +289,8 @@ export default function App() {
         onChanged={refreshSources}
         onOpenRepo={() => setShowRepo(true)}
         onOpenHistory={() => setView({ kind: "history" })}
+        onOpenShelf={() => setView({ kind: "shelf" })}
+        shelfCount={shelf.length}
         onOpenVerify={() => setView({ kind: "verify" })}
         onOpenSettings={() => setView({ kind: "settings" })}
         stats={stats}
@@ -273,6 +342,10 @@ export default function App() {
               categories={categories}
               onOpen={openArticle}
               onItemsChange={setSiblings}
+              isOnShelf={(c) => shelf.some((e) => e.id === shelfId(selected.id, c))}
+              onToggleShelf={({ category, first }) =>
+                toggleShelf(selected.id, selected.name, category, first)
+              }
             />
           </>
         )}
@@ -319,6 +392,10 @@ export default function App() {
 
         {view.kind === "history" && (
           <HistoryPanel onOpen={openHistoryEntry} onClose={() => setView({ kind: "list" })} />
+        )}
+
+        {view.kind === "shelf" && (
+          <ShelfPanel onOpen={openShelfEntry} onClose={() => setView({ kind: "list" })} />
         )}
 
         {view.kind === "verify" && (

@@ -809,6 +809,50 @@ try {
       console.log("  screenshots: test-results/native-music.png, native-video.png");
     }
 
+    // -- The bookshelf --------------------------------------------------------
+    // The star and the panel go through new IPC commands, so the packaged app is
+    // the only place they are proven end to end. This lives outside the
+    // categories block because that one is nested in the network leg, and none
+    // of this needs the internet.
+    if (fixtureBase) {
+      console.log("  (bookshelf)");
+      await page.locator(".src-item", { hasText: "音乐夹具" }).first().click();
+      await page.waitForSelector(".grid .card", { timeout: 30000 });
+
+      await page.waitForSelector(".shelf-bar button", { timeout: 15000 });
+      const star = page.locator(".shelf-bar button");
+      assert.match((await star.innerText()).trim(), /收进书架/, "the star starts already saved");
+      await star.click();
+      await page.waitForFunction(
+        () => document.querySelector(".shelf-bar button")?.textContent?.includes("已在书架"),
+        null,
+        { timeout: 10000 },
+      );
+
+      const saved = await page.evaluate(() =>
+        window.__TAURI_INTERNALS__.invoke("list_shelf"),
+      );
+      assert.equal(saved.length, 1, `the packaged app stored ${saved.length} shelf entries`);
+      assert.ok(saved[0].category, "the shelf entry lost its category");
+      assert.ok(saved[0].added_at > 0, "the backend did not stamp added_at");
+      console.log(`  saved through IPC: ${saved[0].title} (${saved[0].category})`);
+
+      await page.getByRole("button", { name: /书架/ }).first().click();
+      await page.waitForSelector(".list .row", { timeout: 10000 });
+      const shelfTitle = (await page.locator(".list .row-title").first().innerText()).trim();
+      assert.ok(shelfTitle.length > 0, "the packaged shelf panel rendered an empty row");
+      console.log(`  the packaged shelf panel shows: ${shelfTitle}`);
+
+      // Removing it must take effect in the UI, not just in the store.
+      await page.locator('.list .row button[aria-label^="从书架移除"]').first().click();
+      await page.waitForFunction(
+        () => window.__TAURI_INTERNALS__.invoke("list_shelf").then((s) => s.length === 0),
+        null,
+        { timeout: 10000 },
+      );
+      console.log("  removing a shelf row persisted through the backend");
+    }
+
     // Verification is driven from the imported collection, so it needs the
     // network leg.
     if (wantNetwork) {

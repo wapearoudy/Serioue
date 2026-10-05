@@ -91,6 +91,28 @@ pub struct Collection {
     pub added_at: i64,
 }
 
+/// One entry on the bookshelf: something the user chose to come back to.
+///
+/// A "book" here is a list within a source rather than a single article, because
+/// that is the unit a reader returns to — the chapter list, the album, the
+/// series. The first item is stored so the shelf can offer something to open
+/// before the list has been fetched again.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ShelfEntry {
+    pub id: String,
+    pub source_id: String,
+    pub source_name: String,
+    /// The category the entry was added from, e.g. `全部`.
+    #[serde(default)]
+    pub category: String,
+    pub title: String,
+    /// The first item of the list, used as the entry point.
+    pub url: String,
+    pub kind: String,
+    #[serde(default)]
+    pub added_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HistoryEntry {
     pub id: String,
@@ -145,6 +167,14 @@ pub struct Settings {
     /// opt-in until there is evidence it earns that.
     #[serde(default)]
     pub render_js: bool,
+}
+
+/// Seconds since the epoch, for `added_at` ordering.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn default_true() -> bool {
@@ -203,6 +233,7 @@ struct Inner {
     sources: HashMap<String, StoredSource>,
     collections: Vec<Collection>,
     history: Vec<HistoryEntry>,
+    shelf: Vec<ShelfEntry>,
     settings: Settings,
     /// Reading position per article URL.
     progress: HashMap<String, Progress>,
@@ -258,6 +289,11 @@ impl Store {
         if let Ok(text) = std::fs::read_to_string(self.path("history.json")) {
             if let Ok(list) = serde_json::from_str::<Vec<HistoryEntry>>(&text) {
                 inner.history = list;
+            }
+        }
+        if let Ok(text) = std::fs::read_to_string(self.path("shelf.json")) {
+            if let Ok(list) = serde_json::from_str::<Vec<ShelfEntry>>(&text) {
+                inner.shelf = list;
             }
         }
         if let Ok(text) = std::fs::read_to_string(self.path("settings.json")) {
@@ -465,6 +501,46 @@ impl Store {
         inner.progress.clear();
         self.write_atomic("history.json", &inner.history)?;
         self.write_atomic("progress.json", &inner.progress)?;
+        Ok(())
+    }
+
+    /// The bookshelf, newest first.
+    pub fn shelf(&self) -> Vec<ShelfEntry> {
+        let Ok(inner) = self.inner.lock() else { return Vec::new() };
+        let mut list = inner.shelf.clone();
+        list.sort_by(|a, b| b.added_at.cmp(&a.added_at));
+        list
+    }
+
+    pub fn on_shelf(&self, id: &str) -> bool {
+        let Ok(inner) = self.inner.lock() else { return false };
+        inner.shelf.iter().any(|e| e.id == id)
+    }
+
+    /// Add an entry, or return the existing one if it is already there.
+    ///
+    /// Re-adding must not duplicate: the star on a list header is clicked, not
+    /// a form, and a double click should not leave two rows.
+    pub fn add_shelf(&self, mut entry: ShelfEntry) -> AppResult<ShelfEntry> {
+        let mut inner = self.inner.lock().map_err(|_| AppError::Storage("lock poisoned".into()))?;
+        if let Some(existing) = inner.shelf.iter().find(|e| e.id == entry.id) {
+            return Ok(existing.clone());
+        }
+        // `added_at` has one-second resolution, so two books saved within the
+        // same second would come back in an arbitrary order and the shelf would
+        // not reliably be newest-first. Stepping past the highest stamp already
+        // in use keeps the order the user expects.
+        let newest = inner.shelf.iter().map(|e| e.added_at).max().unwrap_or(0);
+        entry.added_at = entry.added_at.max(now_secs()).max(newest + 1);
+        inner.shelf.push(entry.clone());
+        self.write_atomic("shelf.json", &inner.shelf)?;
+        Ok(entry)
+    }
+
+    pub fn remove_shelf(&self, id: &str) -> AppResult<()> {
+        let mut inner = self.inner.lock().map_err(|_| AppError::Storage("lock poisoned".into()))?;
+        inner.shelf.retain(|e| e.id != id);
+        self.write_atomic("shelf.json", &inner.shelf)?;
         Ok(())
     }
 
@@ -676,6 +752,74 @@ fn test_dir(tag: &str) -> PathBuf {
         store.set_progress("https://x.com/a", 0.5).unwrap();
         store.clear_history().unwrap();
         assert_eq!(store.progress("https://x.com/a"), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn entry(id: &str, added_at: i64) -> ShelfEntry {
+        ShelfEntry {
+            id: id.into(),
+            source_id: "s".into(),
+            source_name: "demo".into(),
+            category: "全部".into(),
+            title: format!("书 {id}"),
+            url: format!("https://x.com/{id}"),
+            kind: "novel".into(),
+            added_at,
+        }
+    }
+
+    #[test]
+    fn the_bookshelf_survives_a_restart_and_sorts_newest_first() {
+        let (store, dir) = temp_store();
+        // `added_at` is supplied by the backend, not the caller: a stale client
+        // must not be able to reorder the shelf.
+        store.add_shelf(entry("a", 0)).unwrap();
+        store.add_shelf(entry("b", 0)).unwrap();
+        store.add_shelf(entry("c", 0)).unwrap();
+
+        let ids: Vec<String> = store.shelf().iter().map(|e| e.id.clone()).collect();
+        assert_eq!(ids, ["c", "b", "a"], "the shelf is not newest-first");
+
+        let reopened = Store::new(dir.clone()).unwrap();
+        assert_eq!(reopened.shelf().len(), 3, "the shelf did not survive a restart");
+        assert_eq!(reopened.shelf()[0].title, "书 c");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn adding_the_same_book_twice_leaves_one_row() {
+        // The star on a list header is clicked, not a form; a double click must
+        // not produce two entries.
+        let (store, dir) = temp_store();
+        let first = store.add_shelf(entry("a", 0)).unwrap();
+        let again = store.add_shelf(entry("a", 999)).unwrap();
+        assert_eq!(again.added_at, first.added_at, "the existing entry was not returned as-is");
+        assert_eq!(store.shelf().len(), 1, "the shelf duplicated an entry");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn books_added_within_one_second_still_come_back_newest_first() {
+        // `added_at` is second-granular, and saving two books is fast. Without
+        // stepping past the previous stamp the order of the shelf would be
+        // whatever the sort happened to leave.
+        let (store, dir) = temp_store();
+        for id in ["a", "b", "c"] {
+            store.add_shelf(entry(id, 0)).unwrap();
+        }
+        let ids: Vec<String> = store.shelf().iter().map(|e| e.id.clone()).collect();
+        assert_eq!(ids, ["c", "b", "a"], "same-second adds came back in the wrong order");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn removing_from_the_bookshelf_is_idempotent() {
+        let (store, dir) = temp_store();
+        store.add_shelf(entry("a", 0)).unwrap();
+        store.remove_shelf("a").unwrap();
+        store.remove_shelf("a").unwrap();
+        assert!(!store.on_shelf("a"));
+        assert!(store.shelf().is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 

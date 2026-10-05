@@ -9,6 +9,9 @@ type Props = {
   onChanged: () => void;
   onOpenRepo: () => void;
   onOpenHistory: () => void;
+  onOpenShelf: () => void;
+  /** How many lists are saved, shown next to the tab. */
+  shelfCount?: number;
   onOpenVerify: () => void;
   onOpenSettings: () => void;
   stats: { sources: number; working: number; checked: number } | null;
@@ -115,6 +118,13 @@ export function Sidebar(props: Props) {
         </button>
         <button className="tab" onClick={props.onOpenHistory}>
           历史
+        </button>
+        <button
+          className="tab"
+          onClick={props.onOpenShelf}
+          title="把常读的分类收进书架，随时回去接着读"
+        >
+          书架{(props.shelfCount ?? 0) > 0 ? ` ${props.shelfCount}` : ""}
         </button>
         <button className="tab" onClick={props.onOpenSettings}>
           设置

@@ -14,6 +14,15 @@ type Props = {
    * the parent if the reader is to show a table of contents for them.
    */
   onItemsChange?: (items: ArticleItem[]) => void;
+  /** Whether the category currently on screen is already on the bookshelf. */
+  isOnShelf?: (category: string) => boolean;
+  /**
+   * Save or unsave the category on screen.
+   *
+   * The category name is passed up rather than lifted: it is chosen here, and
+   * the parent only needs it to build the shelf entry.
+   */
+  onToggleShelf?: (info: { category: string; first?: ArticleItem }) => void;
 };
 
 export function ArticleList({
@@ -22,6 +31,8 @@ export function ArticleList({
   categories,
   onOpen,
   onItemsChange,
+  isOnShelf,
+  onToggleShelf,
 }: Props) {
   const [catIndex, setCatIndex] = useState(0);
   const [items, setItems] = useState<ArticleItem[]>([]);
@@ -142,6 +153,27 @@ export function ArticleList({
 
   return (
     <>
+      {onToggleShelf && !keyword && (
+        <div className="shelf-bar">
+          <button
+            className={(isOnShelf?.(category?.name ?? "") ?? false) ? "on" : ""}
+            onClick={() =>
+              onToggleShelf({ category: category?.name ?? "", first: items[0] })
+            }
+            title={
+              isOnShelf?.(category?.name ?? "")
+                ? "从书架移除这个分类"
+                : "把这个分类收进书架"
+            }
+          >
+            {isOnShelf?.(category?.name ?? "") ? "★" : "☆"}{" "}
+            {isOnShelf?.(category?.name ?? "") ? "已在书架" : "收进书架"}
+          </button>
+          <span className="shelf-bar-hint">
+            收的是「{category?.name ?? "当前分类"}」这一整个列表
+          </span>
+        </div>
+      )}
       {categories.length > 1 && (
         <div className="cat-bar">
           {categories.map((c, i) => (

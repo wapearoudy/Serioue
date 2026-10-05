@@ -95,6 +95,22 @@ export interface RepoCollection {
   json_url: string;
 }
 
+export interface ShelfEntry {
+  id: string;
+  source_id: string;
+  source_name: string;
+  category: string;
+  title: string;
+  url: string;
+  kind: string;
+  added_at: number;
+}
+
+/** The id a shelf entry gets, so the list header can tell whether it is saved. */
+export function shelfId(sourceId: string, category: string): string {
+  return `${sourceId}::${category}`;
+}
+
 export interface HistoryEntry {
   id: string;
   source_id: string;
@@ -266,6 +282,12 @@ export const api = {
   listHistory: (limit?: number) => invoke<HistoryEntry[]>("list_history", { limit: limit ?? null }),
 
   clearHistory: () => invoke<void>("clear_history"),
+
+  listShelf: () => invoke<ShelfEntry[]>("list_shelf"),
+
+  addShelf: (entry: ShelfEntry) => invoke<ShelfEntry>("add_shelf", { entry }),
+
+  removeShelf: (id: string) => invoke<void>("remove_shelf", { id }),
 
   /** Articles started but not finished, newest first. */
   continueReading: () => invoke<ContinueEntry[]>("continue_reading"),

@@ -581,6 +581,26 @@ pub async fn fetch_text(url: String) -> AppResult<String> {
     blocking(move || Ok(crate::engine::fetch::fetch(None, &url)?.body)).await
 }
 
+/// The bookshelf, newest first.
+#[tauri::command]
+pub async fn list_shelf(state: State<'_, AppState>) -> AppResult<Vec<crate::store::ShelfEntry>> {
+    Ok(state.store.shelf())
+}
+
+/// Put a list on the bookshelf, or return it unchanged if already there.
+#[tauri::command]
+pub async fn add_shelf(
+    state: State<'_, AppState>,
+    entry: crate::store::ShelfEntry,
+) -> AppResult<crate::store::ShelfEntry> {
+    state.store.add_shelf(entry)
+}
+
+#[tauri::command]
+pub async fn remove_shelf(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    state.store.remove_shelf(&id)
+}
+
 #[tauri::command]
 pub async fn list_history(state: State<'_, AppState>, limit: Option<usize>) -> AppResult<Vec<HistoryEntry>> {
     let store = state.store.clone();
