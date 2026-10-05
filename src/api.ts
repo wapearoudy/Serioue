@@ -200,6 +200,36 @@ export interface Stats {
   working: number;
 }
 
+/** One period's totals: how many articles, and how long. */
+export interface PeriodStats {
+  articles: number;
+  minutes: number;
+}
+
+/** Articles read from one source, all time. */
+export interface SourceCount {
+  source_id: string;
+  source_name: string;
+  articles: number;
+}
+
+/**
+ * How much the reader has read, derived entirely from local records.
+ *
+ * Minutes are inferred from the gap between opening an article and last saving
+ * a reading position, capped per article — see `reading_stats.rs`, which is
+ * where the cap and its reason live.
+ */
+export interface ReadingStats {
+  today: PeriodStats;
+  week: PeriodStats;
+  all: PeriodStats;
+  /** Busiest sources first. */
+  by_source: SourceCount[];
+  /** False when nothing has been read yet, so the UI can say so. */
+  has_data: boolean;
+}
+
 /** Which sources a batch verification should cover. */
 export type CheckScope = "all" | "failed" | "unchecked" | "stale";
 
@@ -334,6 +364,9 @@ export const api = {
   /** Reading positions for a whole chapter list, keyed by URL. */
   getProgressMany: (urls: string[]) =>
     invoke<Record<string, number>>("get_progress_many", { urls }),
+
+  /** How much has been read today, this week and all time. */
+  readingStats: () => invoke<ReadingStats>("reading_stats"),
 
   /**
    * Fetch a text file the webview cannot fetch itself (CORS). Used for `.lrc`

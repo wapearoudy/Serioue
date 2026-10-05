@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { lineAt, parseLrc, type LyricLine } from "./lyrics";
 
@@ -21,6 +21,11 @@ type Props = {
   /** Remembered volume (0-1), restored on open. */
   volume?: number;
   onVolumeChange?: (volume: number) => void;
+  /**
+   * Sleep-timer options in minutes. Defaults to 15/30/45/60; the preview page
+   * passes shorter ones so the behaviour can be tested without waiting an hour.
+   */
+  sleepMinutes?: number[];
 };
 
 const AUDIO_EXT = /\.(mp3|flac|m4a|aac|wav|ogg|opus)(\?|#|$)/i;
@@ -50,6 +55,45 @@ const REPEAT_TITLE: Record<Repeat, string> = {
 };
 
 /**
+ * Sleep timer.
+ *
+ * `minutes` counts down to a wall-clock deadline and then fades out; `track-end`
+ * fades out as the current track runs out. The distinction matters: only the
+ * timed mode survives a track change — 「本曲结束」 names one track, so switching
+ * tracks has to retire it rather than quietly fade the next one.
+ */
+export type SleepTimer =
+  | { kind: "minutes"; minutes: number; deadline: number }
+  | { kind: "track-end" };
+
+/** The options every music client offers. Overridable so tests need not wait an hour. */
+export const DEFAULT_SLEEP_MINUTES = [15, 30, 45, 60];
+
+/** How long the volume ramp takes once the timer is due. */
+export const SLEEP_FADE_SECONDS = 20;
+
+/** `15` -> "15 分钟"; a fractional option (tests use these) -> "0:06". */
+export function sleepOptionLabel(minutes: number): string {
+  return minutes >= 1 ? `${minutes} 分钟` : formatTime(minutes * 60);
+}
+
+/** What the button shows while a timer is armed: `剩余 14:52` or `本曲结束`. */
+export function sleepCountdown(timer: SleepTimer | null, leftSeconds: number): string {
+  if (!timer) return "";
+  return timer.kind === "track-end" ? "本曲结束" : `剩余 ${formatTime(Math.max(0, leftSeconds))}`;
+}
+
+/** A running volume ramp, kept out of state because rAF must not re-render. */
+type Fade = {
+  /** Generation this ramp belongs to; a newer one means this one is dead. */
+  gen: number;
+  /** Volume to restore if the ramp is interrupted. */
+  base: number;
+  start: number;
+  durationMs: number;
+};
+
+/**
  * Music player with a real queue.
  *
  * The queue is the whole point: a music source yields dozens of tracks on one
@@ -57,7 +101,15 @@ const REPEAT_TITLE: Record<Repeat, string> = {
  * than on a single file. Playback uses one `<audio>` element and swaps its
  * `src`, which keeps position, volume and Media Session state consistent.
  */
-export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 0.8, onVolumeChange }: Props) {
+export function MusicPlayer({
+  tracks,
+  title,
+  startAt = 0,
+  onNextTrack,
+  volume = 0.8,
+  onVolumeChange,
+  sleepMinutes,
+}: Props) {
   const audio = useRef<HTMLAudioElement>(null);
   const [index, setIndex] = useState(startAt);
   /** What the user asked for; the element follows it. */
@@ -70,6 +122,33 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState<Repeat>("off");
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Sleep timer state.
+   *
+   * The live fields are mirrored into refs because the tick that fires the timer
+   * and the click that cancels it must both see the current value without
+   * waiting for a render. The ramp itself is deliberately *not* state: it runs on
+   * `requestAnimationFrame` and writes straight to `audio.volume`, so it must
+   * not re-render the player 60 times a second.
+   */
+  const [sleep, setSleep] = useState<SleepTimer | null>(null);
+  const sleepRef = useRef<SleepTimer | null>(null);
+  const [sleepLeft, setSleepLeft] = useState(0);
+  const [sleepOpen, setSleepOpen] = useState(false);
+  const [fading, setFading] = useState(false);
+  const [fadeLabel, setFadeLabel] = useState<string | null>(null);
+  const [sleepNotice, setSleepNotice] = useState<string | null>(null);
+  const fade = useRef<Fade | null>(null);
+  const fadeGen = useRef(0);
+  const rafId = useRef(0);
+  /** Set when the timer itself paused playback, so `ended` does not skip ahead. */
+  const stoppedBySleep = useRef(false);
+
+  const options = useMemo(
+    () => (sleepMinutes && sleepMinutes.length > 0 ? sleepMinutes : DEFAULT_SLEEP_MINUTES),
+    [sleepMinutes],
+  );
 
   /**
    * The queue is local state, not the prop, because a listener has to be able
@@ -188,13 +267,18 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
       setDuration(0);
     }
     if (wantPlay) {
+      // A sleep fade ends at volume 0. Resuming must give the user their own
+      // level back, otherwise the next track would start inaudible.
+      if (!fade.current) el.volume = muted ? 0 : vol;
+      stoppedBySleep.current = false;
       el.play()
         .then(() => setPlaying(true))
         .catch(() => setError("这一首无法播放：源可能已失效，或该格式不被支持。"));
+      setSleepNotice(null);
     } else {
       el.pause();
     }
-  }, [track, wantPlay]);
+  }, [track, wantPlay, muted, vol]);
 
   const step = useCallback(
     (delta: number) => {
@@ -244,11 +328,14 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
   );
 
   // Volume and mute are element properties, so mirror them whenever they change.
+  // A running sleep fade owns the element's volume, so it is left alone here —
+  // otherwise the next render would slam the volume back up mid-ramp.
   useEffect(() => {
     const el = audio.current;
     if (!el) return;
-    el.volume = vol;
     el.muted = muted;
+    if (fade.current) return;
+    el.volume = vol;
   }, [vol, muted]);
 
   // Restore the remembered volume once the element exists.
@@ -256,8 +343,169 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
 
   useEffect(() => {
     const el = audio.current;
-    if (el && track) el.volume = muted ? 0 : vol;
+    if (el && track && !fade.current) el.volume = muted ? 0 : vol;
   }, [track, vol, muted]);
+
+  // -- sleep timer -----------------------------------------------------------
+
+  /** Single writer for the timer, so the ref never lags behind the state. */
+  const applySleep = useCallback((next: SleepTimer | null) => {
+    sleepRef.current = next;
+    setSleep(next);
+    setSleepLeft(next && next.kind === "minutes" ? Math.max(0, (next.deadline - Date.now()) / 1000) : 0);
+  }, []);
+
+  /**
+   * Stop a running ramp and put the volume back.
+   *
+   * Bumping the generation is what makes a cancel safe: the frame callback
+   * compares the generation it captured against the current one, so a ramp that
+   * is already in flight stops writing to `audio.volume` on its very next frame
+   * instead of racing the restore and dragging the volume back down.
+   */
+  const cancelFade = useCallback(() => {
+    fadeGen.current += 1;
+    const running = fade.current;
+    fade.current = null;
+    if (rafId.current) cancelAnimationFrame(rafId.current);
+    rafId.current = 0;
+    setFading(false);
+    setFadeLabel(null);
+    if (!running) return;
+    const el = audio.current;
+    if (el) el.volume = running.base;
+    // Keep the slider honest: the element is back at the user's own level.
+    setVol(running.base);
+  }, []);
+
+  /**
+   * Ramp the element's volume linearly to zero over `seconds`, then pause.
+   *
+   * The ramp drives `audio.volume` itself, not a CSS opacity on some wrapper:
+   * the point of a sleep timer is that the sound actually stops, so muting a
+   * div would leave the audio playing. Elapsed time is taken from the clock
+   * rather than accumulated per frame, so a backgrounded tab that skipped frames
+   * resumes on the ramp instead of restarting it.
+   */
+  const startFade = useCallback((seconds: number, label: string) => {
+    const el = audio.current;
+    if (!el) return;
+    // Stop cleanly before starting a new ramp, and retry in a moment if the
+    // element is not there yet.
+    fadeGen.current += 1;
+    const gen = fadeGen.current;
+    const base = el.volume;
+    const durationMs = Math.max(200, seconds * 1000);
+    const start = performance.now();
+    fade.current = { gen, base, start, durationMs };
+    setFading(true);
+    // The ramp outlives the countdown that triggered it, and it must stay
+    // cancellable while it runs — hence its own visible label.
+    setFadeLabel(label);
+
+    const tick = () => {
+      if (fadeGen.current !== gen) return;
+      const node = audio.current;
+      if (!node) return;
+      const done = Math.min(1, (performance.now() - start) / durationMs);
+      // A tiny epsilon keeps a track-end ramp from reaching the very last frame,
+      // where pausing races the `ended` event into skipping to the next track.
+      node.volume = Math.max(0, base * (1 - Math.min(1, done * 1.02)));
+      if (done < 1) {
+        rafId.current = requestAnimationFrame(tick);
+        return;
+      }
+      fade.current = null;
+      rafId.current = 0;
+      node.volume = 0;
+      node.pause();
+      stoppedBySleep.current = true;
+      setFading(false);
+      setFadeLabel(null);
+      setWantPlay(false);
+      setSleepNotice(label);
+    };
+    rafId.current = requestAnimationFrame(tick);
+  }, []);
+
+  const chooseMinutes = useCallback(
+    (minutes: number) => {
+      cancelFade();
+      applySleep({ kind: "minutes", minutes, deadline: Date.now() + minutes * 60_000 });
+      setSleepNotice(null);
+      setSleepOpen(false);
+    },
+    [applySleep, cancelFade],
+  );
+
+  const chooseTrackEnd = useCallback(() => {
+    cancelFade();
+    applySleep({ kind: "track-end" });
+    setSleepNotice(null);
+    setSleepOpen(false);
+  }, [applySleep, cancelFade]);
+
+  const cancelSleep = useCallback(() => {
+    cancelFade();
+    applySleep(null);
+    setSleepNotice(null);
+    setSleepOpen(false);
+  }, [applySleep, cancelFade]);
+
+  // 「本曲结束」 names one track, so a track change retires it. Without this the
+  // timer would quietly fade whatever happens to be playing next.
+  const trackUrl = track?.url;
+  useEffect(() => {
+    if (sleepRef.current?.kind === "track-end") {
+      applySleep(null);
+      setSleepNotice(null);
+    }
+    // Only a change of track retires the timer; arming it must not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackUrl]);
+
+  // Countdown for the timed mode. An interval, not `setTimeout`, so a throttled
+  // background tab still stops the music when it comes back.
+  useEffect(() => {
+    if (!sleep || sleep.kind !== "minutes") return;
+    const id = window.setInterval(() => {
+      const current = sleepRef.current;
+      if (!current || current.kind !== "minutes") return;
+      const left = (current.deadline - Date.now()) / 1000;
+      setSleepLeft(Math.max(0, left));
+      if (left > 0) return;
+      applySleep(null);
+      setSleepOpen(false);
+      startFade(SLEEP_FADE_SECONDS, "睡眠定时已到，播放已暂停");
+    }, 200);
+    return () => window.clearInterval(id);
+  }, [sleep, applySleep, startFade]);
+
+  // Watch the remaining track length for 「本曲结束」, starting the ramp early
+  // enough that the track fades out rather than being cut off.
+  useEffect(() => {
+    if (!sleep || sleep.kind !== "track-end") return;
+    const id = window.setInterval(() => {
+      const el = audio.current;
+      if (!el || fade.current || el.paused) return;
+      const remaining = el.duration - el.currentTime;
+      if (!Number.isFinite(remaining) || remaining <= 0 || remaining > SLEEP_FADE_SECONDS) return;
+      applySleep(null);
+      setSleepOpen(false);
+      startFade(remaining, "本曲结束，播放已暂停");
+    }, 200);
+    return () => window.clearInterval(id);
+  }, [sleep, applySleep, startFade]);
+
+  // Never leave a ramp running after the player goes away.
+  useEffect(
+    () => () => {
+      fadeGen.current += 1;
+      if (rafId.current) cancelAnimationFrame(rafId.current);
+      fade.current = null;
+    },
+    [],
+  );
 
   // Keyboard control, but never while the user is typing somewhere else.
   useEffect(() => {
@@ -300,6 +548,27 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
 
   const pct = duration > 0 ? (position / duration) * 100 : 0;
 
+  /**
+   * End of track.
+   *
+   * Three cases, in order: a sleep timer stopped playback here, a 「本曲结束」
+   * timer is still armed (it fades just before the end, but a paused-and-resumed
+   * track can still reach the end first), and otherwise it is just the queue
+   * moving on.
+   */
+  const onEnded = useCallback(() => {
+    const current = sleepRef.current;
+    if (stoppedBySleep.current || current?.kind === "track-end") {
+      stoppedBySleep.current = false;
+      cancelFade();
+      applySleep(null);
+      setWantPlay(false);
+      setSleepNotice("本曲结束，播放已暂停");
+      return;
+    }
+    step(1);
+  }, [applySleep, cancelFade, step]);
+
   return (
     <div className="music">
       <audio
@@ -309,7 +578,7 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
         onPause={() => setPlaying(false)}
         onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
         onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
-        onEnded={next}
+        onEnded={onEnded}
         onError={() => setError("这一首无法播放：源可能已失效，或该格式不被支持。")}
       />
 
@@ -373,6 +642,84 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
 
         <span className="spacer" />
 
+        {/* Sleep timer. The countdown lives on the button itself: a timer that
+            stops the music without saying so is worse than no timer at all. */}
+        <div style={{ position: "relative" }}>
+          <button
+            data-sleep-toggle="1"
+            className={sleep ? "on" : ""}
+            onClick={() => setSleepOpen((o) => !o)}
+            title={sleep ? `睡眠定时：${sleepCountdown(sleep, sleepLeft)}` : "睡眠定时"}
+            aria-pressed={sleep !== null || fading}
+            aria-expanded={sleepOpen}
+            style={{ fontSize: 12, whiteSpace: "nowrap" }}
+          >
+            🌙{sleep ? ` ${sleepCountdown(sleep, sleepLeft)}` : ""}
+            {fading ? " 淡出中" : ""}
+          </button>
+          {sleepOpen && (
+            <div
+              role="menu"
+              aria-label="睡眠定时"
+              style={{
+                position: "absolute",
+                right: 0,
+                bottom: "100%",
+                marginBottom: 6,
+                zIndex: 20,
+                display: "flex",
+                flexDirection: "column",
+                minWidth: 148,
+                padding: 4,
+                background: "var(--panel, #fff)",
+                border: "1px solid var(--line, #ddd)",
+                borderRadius: 8,
+                boxShadow: "0 6px 20px rgba(0,0,0,0.18)",
+              }}
+            >
+              {options.map((m) => (
+                <button
+                  key={m}
+                  role="menuitem"
+                  data-sleep-option={m}
+                  className="ghost"
+                  style={{ textAlign: "left", padding: "6px 8px", fontSize: 12 }}
+                  onClick={() => chooseMinutes(m)}
+                >
+                  {sleepOptionLabel(m)}
+                </button>
+              ))}
+              <button
+                role="menuitem"
+                data-sleep-option="track-end"
+                className="ghost"
+                style={{ textAlign: "left", padding: "6px 8px", fontSize: 12 }}
+                onClick={chooseTrackEnd}
+              >
+                本曲结束
+              </button>
+              {/* A fade in progress still belongs to the timer, so it stays cancellable. */}
+              {(sleep || fading) && (
+                <button
+                  role="menuitem"
+                  data-sleep-action="cancel"
+                  className="ghost"
+                  style={{
+                    textAlign: "left",
+                    padding: "6px 8px",
+                    fontSize: 12,
+                    borderTop: "1px solid var(--line, #ddd)",
+                    marginTop: 2,
+                  }}
+                  onClick={cancelSleep}
+                >
+                  取消定时{fading ? "（淡出中，立即恢复音量）" : ""}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
         <button onClick={() => setMuted((m) => !m)} title={muted ? "取消静音" : "静音"}>
           {muted ? "🔇" : "🔊"}
         </button>
@@ -385,11 +732,30 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
           value={muted ? 0 : vol}
           onChange={(e) => setAndReportVolume(Number(e.target.value))}
           aria-label="音量"
+          // During a fade the element's volume belongs to the ramp; a slider
+          // that silently does nothing is worse than one that says so.
+          disabled={fading}
+          title={fading ? "睡眠定时淡出中" : "音量"}
           style={{ "--pct": `${(muted ? 0 : vol) * 100}%` } as React.CSSProperties}
         />
       </div>
 
       {error && <div className="music-error">{error}</div>}
+
+      {(sleep || fading || sleepNotice) && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-sleep-status={fading ? "fading" : sleep ? "armed" : "done"}
+          style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 4 }}
+        >
+          {fading
+            ? `${fadeLabel ?? "睡眠定时"}淡出中 · 正在降低音量并即将暂停`
+            : sleep
+              ? `睡眠定时已开启 · ${sleepCountdown(sleep, sleepLeft)}`
+              : sleepNotice}
+        </div>
+      )}
 
       {lyrics && (
         <div

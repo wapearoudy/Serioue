@@ -3,6 +3,7 @@ use crate::engine::verify::{self, Target};
 use crate::error::{AppError, AppResult};
 use crate::model::{Category, Source};
 use crate::repo;
+use crate::reading_stats::ReadingStats;
 use crate::store::{Collection, Health, HistoryEntry, Settings, SourcePatch, StoredSource, Store};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -687,7 +688,7 @@ pub async fn shelf_progress(state: State<'_, AppState>) -> AppResult<Vec<ShelfPr
 
         let mut out = results.lock().map(|r| r.clone()).unwrap_or_default();
         // Newest first, matching the shelf's own order.
-        out.sort_by(|a, b| b.entry.added_at.cmp(&a.entry.added_at));
+        out.sort_by_key(|e| std::cmp::Reverse(e.entry.added_at));
         Ok(out)
     })
     .await
@@ -805,6 +806,23 @@ pub async fn get_progress_many(
 pub async fn save_progress(state: State<'_, AppState>, url: String, ratio: f32) -> AppResult<()> {
     let store = state.store.clone();
     blocking(move || store.set_progress(&url, ratio)).await
+}
+
+/// How much the reader has read: today, this week and all time.
+///
+/// A thin wrapper over `reading_stats::compute`: the records come from the
+/// store, the arithmetic lives in one pure function that can be tested at a
+/// chosen date. No network is involved — the numbers are derived entirely from
+/// history and reading positions the app already keeps.
+#[tauri::command]
+pub async fn reading_stats(state: State<'_, AppState>) -> AppResult<ReadingStats> {
+    let store = state.store.clone();
+    blocking(move || {
+        let history = store.history(1000);
+        let progress = store.progress_all();
+        Ok(crate::reading_stats::compute(&history, &progress, chrono::Utc::now().timestamp()))
+    })
+    .await
 }
 
 /// A half-read article the user can pick up again.

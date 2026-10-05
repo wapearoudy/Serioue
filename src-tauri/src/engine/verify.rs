@@ -348,10 +348,8 @@ fn probe_list(src: &Source) -> (StageResult, Vec<ArticleItem>) {
     }
 
     if items.is_empty() {
-        let hint = if needs_javascript(src) {
-            "该源开启了 JS 解析，而页面内容由脚本生成——纯服务端解析拿不到内容"
-        } else {
-            "通常是站点改版导致选择器失效"
+        let hint = if needs_javascript(src) { script_render_hint() } else {
+            "通常是站点改版导致选择器失效".to_string()
         };
         return (
             stage(
@@ -380,6 +378,28 @@ fn probe_list(src: &Source) -> (StageResult, Vec<ArticleItem>) {
         (StageState::Ok, format!("解析出 {} 条 · 首条: {first}", items.len()))
     };
     (stage("list", "列表", state, detail), items)
+}
+
+/// What to tell someone whose source needs a browser the fetch path cannot be.
+///
+/// Measured, not guessed: over 16 sources that failed exactly this way, turning
+/// the render fallback on rescued 2 of them (`test-results/render-ab.log`). So
+/// the switch is worth offering and worth not overselling — the common case is
+/// a rule that does not match the rendered page, and saying only "it needs
+/// JavaScript" left the reader with nothing to do.
+///
+/// The two states are told apart deliberately: "you have not turned it on yet"
+/// and "it is on and still nothing" call for different next steps.
+fn script_render_hint() -> String {
+    if browse::render_enabled() && browse::rendered_html_available() {
+        "该源开启了 JS 解析，而页面内容由脚本生成——浏览器渲染已开启仍没有条目：\
+         多半是规则与渲染后的页面对不上，需要改规则"
+            .to_string()
+    } else {
+        "该源开启了 JS 解析，而页面内容由脚本生成——纯服务端解析拿不到内容：\
+         可在设置里打开「浏览器渲染」再试（实测 16 个这类源只有 2 个能救回来，其余要改规则）"
+            .to_string()
+    }
 }
 
 fn probe_detail(src: &Source, item: &ArticleItem) -> (StageResult, ()) {
@@ -676,6 +696,27 @@ mod tests {
         assert_eq!(size_label(512), "512 B");
         assert_eq!(size_label(2048), "2.0 KB");
         assert_eq!(size_label(3 * 1024 * 1024), "3.0 MB");
+    }
+
+    #[test]
+    fn the_script_render_hint_says_what_to_do_next() {
+        // With no renderer registered the fallback cannot run, so the hint has
+        // to offer the switch rather than pretend the engine tried.
+        let hint = script_render_hint();
+        assert!(hint.contains("浏览器渲染"), "{hint}");
+        assert!(
+            !hint.contains("已开启"),
+            "without a renderer the message must not claim rendering was tried: {hint}"
+        );
+    }
+
+    #[test]
+    fn the_script_render_hint_does_not_oversell_the_fallback() {
+        // The number that keeps this honest: of the 16 sources measured, 2 came
+        // back. A hint that implied the switch fixes this class would be
+        // repeating the mistake the measurement corrected.
+        let hint = script_render_hint();
+        assert!(hint.contains("16"), "{hint}");
     }
 
     #[test]

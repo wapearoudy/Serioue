@@ -2,6 +2,7 @@ pub mod commands;
 pub mod engine;
 pub mod error;
 pub mod model;
+pub mod reading_stats;
 pub mod repo;
 pub mod render_probe;
 pub mod store;
@@ -83,6 +84,7 @@ pub fn run() {
             commands::get_progress,
             commands::get_progress_many,
             commands::save_progress,
+            commands::reading_stats,
             commands::list_collections,
             commands::remove_collection,
             commands::get_settings,

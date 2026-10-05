@@ -239,7 +239,12 @@ fn new_context(json: &Json) -> Result<Context, JsError> {
 
     // Expose the JSON body to the script.
     let body = serde_json::to_string(json).unwrap_or_else(|_| "{}".into());
-    let expr = format!("globalThis.__body = {body};");
+    // `result` is how Legado rules name the value the preceding selector picked:
+    // `$.address@js:result.replace(/rtmp:\//, "")`. Binding it here rather than
+    // only inside the statement form is what makes expression-form rules work;
+    // without it `result` is undefined, the call throws, and the source yields
+    // items with no link at all.
+    let expr = format!("globalThis.__body = {body}; globalThis.result = globalThis.__body;");
     context
         .eval(Source::from_bytes(&expr))
         .map_err(|e| JsError(format!("body: {e}")))?;
@@ -380,6 +385,28 @@ mod tests {
     fn exposes_legado_globals() {
         let out = eval_to_string("typeof java.ajax", &json!({}));
         assert_eq!(out, "function");
+    }
+
+    #[test]
+    fn result_is_the_value_the_selector_extracted() {
+        // Legado rules use `result` to mean the value the preceding selector
+        // picked. A live source does exactly this:
+        //     $.address@js:result.replace(/rtmp:\//, "")
+        // Without the binding, `result` is undefined, `.replace` throws, and the
+        // source silently yields items with no link at all.
+        let address = "rtmp://live.example.com/stream";
+        assert_eq!(eval_to_string("result", &json!(address)), address);
+        assert_eq!(
+            eval_to_string(r#"result.replace(/^rtmp:\/\//, "")"#, &json!(address)),
+            "live.example.com/stream"
+        );
+    }
+
+    #[test]
+    fn result_still_works_as_a_statement_target() {
+        // Binding `result` must not break the `result = ...; result` form.
+        let out = eval_to_string("var x = 1 + 1; result = 'v' + x;", &json!({}));
+        assert_eq!(out, "v2");
     }
 
     #[test]

@@ -23,6 +23,107 @@ function writeStore(next: Record<string, unknown>) {
   localStorage.setItem(STORE_KEY, JSON.stringify(next));
 }
 
+/** Longest any single article may claim, matching `reading_stats.rs`. */
+const MAX_ARTICLE_SECS = 30 * 60;
+
+/** Local calendar day of a timestamp, as `YYYY-MM-DD`. */
+function localDay(secs: number): string {
+  const d = new Date(secs * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
+}
+
+/** Monday of the week containing a local day. */
+function weekStart(day: string): string {
+  const [y, m, d] = day.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  // getDay() is 0 on Sunday; shift so Monday is the first day of the week.
+  const offset = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - offset);
+  return localDay(new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime() / 1000);
+}
+
+/**
+ * Reading statistics from stored records.
+ *
+ * Mirrors `reading_stats::compute`: articles counted on the day they were
+ * opened, minutes inferred from the gap between opening an article and its last
+ * saved position, capped per article, and split across midnight so neither day
+ * is credited with the other's reading.
+ */
+function computeReadingStats(
+  history: Array<Record<string, unknown>>,
+  progress: Record<string, number>,
+  stamps: Record<string, number>,
+) {
+  const now = Math.floor(Date.now() / 1000);
+  const today = localDay(now);
+  const monday = weekStart(today);
+
+  const secondsByDay = new Map<string, number>();
+  const articlesByDay = new Map<string, number>();
+  const bySource = new Map<string, { source_id: string; source_name: string; articles: number }>();
+  let total = 0;
+
+  for (const entry of history) {
+    const viewedAt = Number(entry.viewed_at) || 0;
+    const url = String(entry.url ?? "");
+    const day = localDay(viewedAt);
+    articlesByDay.set(day, (articlesByDay.get(day) ?? 0) + 1);
+
+    const sourceId = String(entry.source_id ?? "");
+    const sourceName = String(entry.source_name ?? "");
+    const key = sourceId || sourceName;
+    const bucket = bySource.get(key) ?? { source_id: sourceId, source_name: sourceName, articles: 0 };
+    bucket.articles += 1;
+    bySource.set(key, bucket);
+
+    if (!(url in progress)) continue;
+    const saved = Number(stamps[url]) || 0;
+    const start = Math.min(viewedAt, saved);
+    const end = Math.max(viewedAt, saved);
+    if (end <= start) continue;
+    let remaining = Math.min(end - start, MAX_ARTICLE_SECS);
+    let cursor = start;
+    let cursorDay = localDay(start);
+    while (remaining > 0) {
+      const midnight = new Date(cursorDay + "T00:00:00");
+      midnight.setDate(midnight.getDate() + 1);
+      const boundary = Math.floor(midnight.getTime() / 1000);
+      const take = boundary > cursor ? Math.min(boundary - cursor, remaining) : remaining;
+      secondsByDay.set(cursorDay, (secondsByDay.get(cursorDay) ?? 0) + take);
+      total += take;
+      remaining -= take;
+      cursor += take;
+      cursorDay = localDay(cursor);
+    }
+  }
+
+  const inWeek = (day: string) => day >= monday && day <= today;
+  const sumDays = (m: Map<string, number>, want: (d: string) => boolean) => {
+    let n = 0;
+    for (const [d, v] of m) if (want(d)) n += v;
+    return n;
+  };
+
+  return {
+    today: {
+      articles: articlesByDay.get(today) ?? 0,
+      minutes: Math.floor((secondsByDay.get(today) ?? 0) / 60),
+    },
+    week: {
+      articles: sumDays(articlesByDay, inWeek),
+      minutes: Math.floor(sumDays(secondsByDay, inWeek) / 60),
+    },
+    all: { articles: history.length, minutes: Math.floor(total / 60) },
+    by_source: Array.from(bySource.values()).sort(
+      (a, b) => b.articles - a.articles || a.source_name.localeCompare(b.source_name),
+    ),
+    has_data: history.length > 0,
+  };
+}
+
 const HANDLERS: Record<string, Handler> = {
   // A tiny in-page source: three categories, each with a couple of items. Used
   // by the shelf preview so the real ArticleList has something to render.
@@ -45,6 +146,21 @@ const HANDLERS: Record<string, Handler> = {
     return { items, next: null, final_url: url || "/demo/list/all" };
   },
   list_highlights: () => readStore().highlights ?? [],
+  // --- reading statistics --------------------------------------------------
+  // The same rules the Rust command applies, so a preview run shows what the
+  // packaged app would show for the same records. The two implementations sit
+  // side by side on purpose: when they disagree, this one is what has to change.
+  list_history: () => readStore().history ?? [],
+  reading_stats: () => {
+    const store = readStore();
+    // A recorded failure, so a test can check that the panel says something when
+    // the backend cannot answer instead of turning forever.
+    if (store.reading_stats_error) throw new Error(String(store.reading_stats_error));
+    const history = ((store.history ?? []) as Array<Record<string, unknown>>).slice();
+    const progress = (store.progress ?? {}) as Record<string, number>;
+    const stamps = (store.progress_at ?? {}) as Record<string, number>;
+    return computeReadingStats(history, progress, stamps);
+  },
   highlights_for: (args) => {
     const all = (readStore().highlights ?? []) as Array<Record<string, unknown>>;
     return all
@@ -111,7 +227,12 @@ const HANDLERS: Record<string, Handler> = {
     const store = readStore();
     const progress = { ...((store.progress ?? {}) as Record<string, number>) };
     progress[String(args.url)] = Number(args.ratio) || 0;
-    writeStore({ ...store, progress });
+    // The backend stores when a position was saved as well as the ratio, and the
+    // reading statistics need that timestamp. It lives in its own key so the
+    // ratio map stays the plain numbers the shelf code already reads.
+    const stamps = { ...((store.progress_at ?? {}) as Record<string, number>) };
+    stamps[String(args.url)] = Math.floor(Date.now() / 1000);
+    writeStore({ ...store, progress, progress_at: stamps });
   },
   get_settings: () => readStore().settings ?? {},
   set_settings: (args) => {

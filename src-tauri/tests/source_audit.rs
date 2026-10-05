@@ -323,6 +323,24 @@ fn audits_a_collection() {
         println!("  {key:<12} {:>3}  ({:.0}%)", list.len(), list.len() as f64 / total * 100.0);
     }
 
+    // Every verified source must land in exactly one bucket. A source that is
+    // counted in the denominator but in no bucket is a source this report is
+    // silently dividing by, so the two numbers are printed together and checked
+    // loudly — the point is to keep the discrepancy visible, not to explain it
+    // away.
+    let bucketed: usize = buckets.values().map(|v| v.len()).sum();
+    if bucketed != outcome.total {
+        println!(
+            "\n  !!!! NO-VERDICT WARNING: {bucketed} bucketed but {} verified — \
+             {} source(s) are in the denominator with no bucket. Every rate below is \
+             provisional until this is explained.",
+            outcome.total,
+            outcome.total.saturating_sub(bucketed),
+        );
+    } else {
+        println!("  ({bucketed} verified, {bucketed} bucketed — every source has a verdict)");
+    }
+
     // The headline number: of what this machine can reach, how much does the
     // engine actually handle?
     let working = buckets.get("working").map(|v| v.len()).unwrap_or(0);
@@ -355,7 +373,16 @@ fn audits_a_collection() {
     }
 
     let _ = detail;
+    // Same check as the warning above, as an assertion: it is what proves this
+    // batch ran to completion rather than being cut short mid-report. Both the
+    // summary and this line are printed by the same process, so a truncated run
+    // (a pipe closed early, a killed cargo) fails here instead of leaving a
+    // plausible-looking report behind. Note for anyone piping this: do not read
+    // it through `Select-Object -First N` or anything else that closes the pipe
+    // once it has enough lines — that kills the run and the summary you just
+    // read was never checked.
     assert_eq!(working + buckets.get("rule-broken").map(|v| v.len()).unwrap_or(0)
         + buckets.get("unreachable").map(|v| v.len()).unwrap_or(0)
-        + buckets.get("degraded").map(|v| v.len()).unwrap_or(0), outcome.total);
+        + buckets.get("degraded").map(|v| v.len()).unwrap_or(0), outcome.total,
+        "{bucketed} source(s) were bucketed but {} were verified", outcome.total);
 }

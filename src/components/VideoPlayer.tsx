@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { Subtitle } from "./media";
+import {
+  clearQualityMemory,
+  qualityMemoryKey,
+  readQualityMemory,
+  writeQualityMemory,
+} from "./videoQuality";
 
 /**
  * hls.js is ~500 kB, which is more than the rest of the app combined.
@@ -83,6 +89,16 @@ type Props = {
 
 /** Seconds the viewer can take to cancel before the next entry starts. */
 const AUTOPLAY_WAIT = 6;
+
+/**
+ * How long the viewer may leave the pointer alone before the controls fade out
+ * in fullscreen. Three seconds is what a touch player waits; shorter and the
+ * bar blinks during every reach for the volume slider.
+ *
+ * Deliberately not exported: a non-component export is enough to break Fast
+ * Refresh for the whole module, and nothing outside the player needs this.
+ */
+const UI_IDLE_MS = 3000;
 
 /**
  * Offer to continue into the next entry once a video finishes.
@@ -171,6 +187,45 @@ export function VideoPlayer({
   /** Set when a video finishes and there is somewhere to go next. */
   const [finished, setFinished] = useState(false);
 
+  /**
+   * Fullscreen feel.
+   *
+   * `playing` and `isFullscreen` come from the element and the document rather
+   * than from a click handler, because playback can start without a click (the
+   * autoplay prompt, resuming a stored position) and fullscreen can end with the
+   * Escape key. `uiHidden` is the only thing the controls actually read.
+   */
+  const [playing, setPlaying] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [uiHidden, setUiHidden] = useState(false);
+  /** Bumped by any interaction, to restart the idle countdown. */
+  const [wake, setWake] = useState(0);
+  /** True while the element is starved for data. */
+  const [buffering, setBuffering] = useState(false);
+  /** How much of the stream is already downloaded, 0-100. */
+  const [bufferedPct, setBufferedPct] = useState(0);
+  /** The level restored from memory for this entry, or null. */
+  const [remembered, setRemembered] = useState<number | null>(null);
+  /** Playhead and runtime, for the seek bar. */
+  const [time, setTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  /**
+   * Picture-in-picture. The native bar used to provide it; this bar replaces it,
+   * so the capability has to come back explicitly or it would simply be lost.
+   */
+  const [pipActive, setPipActive] = useState(false);
+  // Asked of the document, not of the element: on the first render the ref is
+  // still null, and a button that only appears on some later re-render is a
+  // button that is sometimes missing.
+  const pipAvailable =
+    typeof document !== "undefined" && document.pictureInPictureEnabled === true;
+
+  /** Which entry the quality memory belongs to. */
+  const memKey = qualityMemoryKey(resumeKey, src);
+  // Read from inside the hls.js callbacks, which outlive any one render.
+  const memKeyRef = useRef(memKey);
+  memKeyRef.current = memKey;
+
   const isHls = HLS_EXT.test(src);
   /** True when this platform can play HLS through Media Source. */
   const [mseAvailable, setMseAvailable] = useState(true);
@@ -222,6 +277,23 @@ export function VideoPlayer({
           .sort((a, b) => a.index - b.index);
         setLevels(parsed);
         setErr(null);
+
+        // Restore the level this entry was last watched at. A memory that points
+        // at a rendition this stream does not have is ignored rather than
+        // applied, so a re-encoded entry falls back to 自动 instead of stalling.
+        const stored = readQualityMemory(memKeyRef.current);
+        if (stored === null) {
+          setRemembered(null);
+          return;
+        }
+        const usable = stored === -1 || parsed.some((l) => l.index === stored);
+        if (!usable) {
+          setRemembered(null);
+          return;
+        }
+        hls.currentLevel = stored;
+        setLevel(stored);
+        setRemembered(stored);
       });
 
       hls.on(Hls.Events.LEVEL_SWITCHED, (_e, data) => {
@@ -266,6 +338,10 @@ export function VideoPlayer({
     setPanel(null);
     setResumeAt(null);
     setFinished(false);
+    setBuffering(false);
+    setBufferedPct(0);
+    // -1 here is the "no choice remembered yet" marker, not a remembered 自动.
+    setRemembered(readQualityMemory(memKeyRef.current));
   }, [src]);
 
   const countdown = useAutoplayPrompt(finished, src, onNext);
@@ -372,6 +448,20 @@ export function VideoPlayer({
     if (instance) instance.currentLevel = index;
     setLevel(index);
     setPanel(null);
+    // Remembered per entry: the whole point is that opening this episode again
+    // does not silently drop back to 自动.
+    writeQualityMemory(memKeyRef.current, index);
+    setRemembered(index);
+  }, []);
+
+  /** Forget this entry's quality choice, so the next open starts at 自动. */
+  const forgetLevel = useCallback(() => {
+    clearQualityMemory(memKeyRef.current);
+    const instance = hlsRef.current;
+    if (instance) instance.currentLevel = -1;
+    setLevel(-1);
+    setRemembered(null);
+    setPanel(null);
   }, []);
 
   const changeSpeed = useCallback(
@@ -411,6 +501,180 @@ export function VideoPlayer({
     else el.requestFullscreen().catch(() => {});
   }, []);
 
+  const togglePlayback = useCallback(() => {
+    const el = video.current;
+    if (!el) return;
+    if (el.paused) el.play().catch(() => setErr("无法自动播放，请点一下播放按钮。"));
+    else el.pause();
+  }, []);
+
+  const seekBy = useCallback((seconds: number) => {
+    const el = video.current;
+    if (!el || !Number.isFinite(el.duration)) return;
+    el.currentTime = Math.max(0, Math.min(el.duration, seconds));
+    setTime(el.currentTime);
+  }, []);
+
+  const togglePip = useCallback(() => {
+    const el = video.current;
+    if (!el || typeof el.requestPictureInPicture !== "function") return;
+    if (document.pictureInPictureElement) {
+      document.exitPictureInPicture().catch(() => {});
+      return;
+    }
+    // hls.js drives the element through Media Source; a picture-in-picture
+    // window may or may not accept it depending on the platform, so a refusal
+    // is reported rather than swallowed.
+    el.requestPictureInPicture().catch(() => setErr("画中画不可用：浏览器拒绝了该请求。"));
+  }, []);
+
+  // Fullscreen is a document-level state: Escape leaves it without going through
+  // the button, and `fullscreenchange` is the only place that is true.
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(document.fullscreenElement === wrap.current);
+    document.addEventListener("fullscreenchange", onChange);
+    onChange();
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  // -- buffering --------------------------------------------------------------
+  // "缓冲中…" with a percentage, from the element's own buffered ranges. A bare
+  // spinner cannot be told apart from a stall; 缓冲中… 63% can.
+  useEffect(() => {
+    const el = video.current;
+    if (!el) return;
+    const readPct = () => {
+      const duration = el.duration;
+      if (!Number.isFinite(duration) || duration <= 0) return 0;
+      const ranges = el.buffered;
+      // The range containing the playhead is the one that matters; for a seek
+      // past the buffered window the furthest end is the honest answer.
+      let end = 0;
+      for (let i = 0; i < ranges.length; i++) {
+        if (ranges.start(i) <= el.currentTime + 0.25) end = Math.max(end, ranges.end(i));
+      }
+      if (end === 0 && ranges.length > 0) end = ranges.end(ranges.length - 1);
+      return Math.max(0, Math.min(100, (end / duration) * 100));
+    };
+    const onProgress = () => setBufferedPct(readPct());
+    const onWaiting = () => {
+      setBufferedPct(readPct());
+      setBuffering(true);
+    };
+    const onPlaying = () => {
+      setBufferedPct(readPct());
+      setBuffering(false);
+    };
+    const onCanPlay = () => setBuffering(false);
+    el.addEventListener("progress", onProgress);
+    el.addEventListener("timeupdate", onProgress);
+    el.addEventListener("loadedmetadata", onProgress);
+    el.addEventListener("durationchange", onProgress);
+    el.addEventListener("seeked", onProgress);
+    el.addEventListener("waiting", onWaiting);
+    el.addEventListener("stalled", onWaiting);
+    el.addEventListener("playing", onPlaying);
+    el.addEventListener("canplay", onCanPlay);
+    el.addEventListener("canplaythrough", onCanPlay);
+    el.addEventListener("seeking", onWaiting);
+    return () => {
+      el.removeEventListener("progress", onProgress);
+      el.removeEventListener("timeupdate", onProgress);
+      el.removeEventListener("loadedmetadata", onProgress);
+      el.removeEventListener("durationchange", onProgress);
+      el.removeEventListener("seeked", onProgress);
+      el.removeEventListener("waiting", onWaiting);
+      el.removeEventListener("stalled", onWaiting);
+      el.removeEventListener("playing", onPlaying);
+      el.removeEventListener("canplay", onCanPlay);
+      el.removeEventListener("canplaythrough", onCanPlay);
+      el.removeEventListener("seeking", onWaiting);
+    };
+  }, []);
+
+  // -- auto-hiding controls ---------------------------------------------------
+  // Playhead for the fullscreen transport. `timeupdate` is ~4 Hz, which is plenty
+  // for a seek bar that the viewer drags rather than watches.
+  useEffect(() => {
+    const el = video.current;
+    if (!el) return;
+    const onTime = () => setTime(el.currentTime);
+    const onMeta = () => setDuration(Number.isFinite(el.duration) ? el.duration : 0);
+    el.addEventListener("timeupdate", onTime);
+    el.addEventListener("seeked", onTime);
+    el.addEventListener("loadedmetadata", onMeta);
+    el.addEventListener("durationchange", onMeta);
+    const onPip = () => setPipActive(true);
+    const onPipLeave = () => setPipActive(false);
+    el.addEventListener("enterpictureinpicture", onPip);
+    el.addEventListener("leavepictureinpicture", onPipLeave);
+    onMeta();
+    return () => {
+      el.removeEventListener("timeupdate", onTime);
+      el.removeEventListener("seeked", onTime);
+      el.removeEventListener("loadedmetadata", onMeta);
+      el.removeEventListener("durationchange", onMeta);
+      el.removeEventListener("enterpictureinpicture", onPip);
+      el.removeEventListener("leavepictureinpicture", onPipLeave);
+    };
+  }, []);
+
+  // Playing state, read from the element: the autoplay prompt and resume both
+  // start playback without a click on the transport.
+  useEffect(() => {
+    const el = video.current;
+    if (!el) return;
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    el.addEventListener("play", onPlay);
+    el.addEventListener("pause", onPause);
+    el.addEventListener("ended", onPause);
+    onPlay();
+    onPause();
+    return () => {
+      el.removeEventListener("play", onPlay);
+      el.removeEventListener("pause", onPause);
+      el.removeEventListener("ended", onPause);
+    };
+  }, []);
+
+  // Any pointer, touch or key activity brings the controls straight back.
+  useEffect(() => {
+    const wake = () => setWake((n) => n + 1);
+    const options: AddEventListenerOptions = { passive: true };
+    window.addEventListener("pointermove", wake, options);
+    window.addEventListener("pointerdown", wake, options);
+    window.addEventListener("touchstart", wake, options);
+    window.addEventListener("keydown", wake);
+    return () => {
+      window.removeEventListener("pointermove", wake);
+      window.removeEventListener("pointerdown", wake);
+      window.removeEventListener("touchstart", wake);
+      window.removeEventListener("keydown", wake);
+    };
+  }, []);
+
+  /**
+   * The controls may only fade while nothing needs reading: a panel is open, a
+   * resume prompt is up, playback has stopped, or the video is not fullscreen.
+   * Paused always shows them — hiding the only way to press play is a trap.
+   */
+  const canHide =
+    isFullscreen &&
+    playing &&
+    panel === null &&
+    countdown === null &&
+    resumeAt === null &&
+    !finished &&
+    !err;
+
+  useEffect(() => {
+    setUiHidden(false);
+    if (!canHide) return;
+    const timer = window.setTimeout(() => setUiHidden(true), UI_IDLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [canHide, wake]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = document.activeElement;
@@ -441,14 +705,60 @@ export function VideoPlayer({
     return () => window.removeEventListener("keydown", onKey);
   }, [fullscreen]);
 
+  // In fullscreen the extras float over the picture: sitting in a row under a
+  // full-height video would put them off screen. The stylesheet's 62vh cap is a
+  // page layout, not something to stare at in fullscreen, so the element's own
+  // height is lifted here.
+  const fsBar = (bottom: number): React.CSSProperties =>
+    isFullscreen
+      ? {
+          position: "absolute",
+          left: 12,
+          right: 12,
+          bottom,
+          marginTop: 0,
+          padding: "4px 8px",
+          borderRadius: 8,
+          background: "rgba(0, 0, 0, 0.55)",
+        }
+      : {};
+
   return (
-    <div className="player-wrap" ref={wrap}>
+    <div
+      className="player-wrap"
+      ref={wrap}
+      data-fullscreen={isFullscreen ? "1" : "0"}
+      onDoubleClick={(e) => {
+        // A double click on our own buttons is a button click, not a request to
+        // go fullscreen.
+        if ((e.target as HTMLElement).closest(".player-controls")) return;
+        // With the native controls up, Chromium turns a double click on the
+        // picture into the *video element's* own fullscreen — which would hide
+        // our bar, its auto-hide and its quality menu behind a UA screen. This
+        // player has to be the one that goes fullscreen, so the browser's own
+        // default is cancelled.
+        e.preventDefault();
+        fullscreen();
+      }}
+    >
+      {/*
+        The browser's own controls are not used.
+
+        Two of this task's requirements are impossible with them: a click
+        anywhere on the picture toggles playback (so a click interrupts the
+        video), and a double click is taken by the UA as the *video element's*
+        own fullscreen, which `preventDefault` does not cancel. Both behaviours
+        belong to the element, not to any listener, so the only way to have this
+        player be the one that behaves is to give it a bar of its own — which is
+        also what every streaming site does.
+      */}
       <video
         ref={video}
         src={useHls ? undefined : src}
         poster={poster}
-        controls
+        controls={false}
         playsInline
+        style={isFullscreen ? { maxHeight: "100vh" } : undefined}
         onLoadedMetadata={onLoadedMetadata}
         onTimeUpdate={() => save(false)}
         onEnded={() => {
@@ -471,8 +781,41 @@ export function VideoPlayer({
         ))}
       </video>
 
+      {buffering && (
+        <div
+          className="player-buffering"
+          data-buffered-pct={Math.round(bufferedPct)}
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "absolute",
+            top: 12,
+            left: "50%",
+            transform: "translateX(-50%)",
+            padding: "4px 12px",
+            borderRadius: 999,
+            fontSize: 12,
+            color: "#fff",
+            background: "rgba(0, 0, 0, 0.65)",
+            pointerEvents: "none",
+          }}
+        >
+          缓冲中… {Math.round(bufferedPct)}%
+        </div>
+      )}
+
       {countdown !== null && (
-        <div className="player-resume">
+        <div
+          className="player-resume"
+          style={{
+            // The stylesheet pins this prompt near the bottom of the wrapper,
+            // which is where the control bars now live; anchored to the top of
+            // the picture it stays clear of them in both modes.
+            top: 12,
+            bottom: "auto",
+            borderRadius: 8,
+          }}
+        >
           <span className="player-resume-text">
             {countdown} 秒后播放：{nextTitle}
           </span>
@@ -491,7 +834,10 @@ export function VideoPlayer({
       )}
 
       {resumeAt !== null && (
-        <div className="player-resume">
+        <div
+          className="player-resume"
+          style={{ top: 12, bottom: "auto", borderRadius: 8 }}
+        >
           <span className="player-resume-text">
             上次看到 {formatSeconds(resumeAt)}
           </span>
@@ -502,80 +848,167 @@ export function VideoPlayer({
         </div>
       )}
 
-      {levels.length > 0 && (
-        <div className="player-extras">
-          <button
-            className={panel === "quality" ? "on" : ""}
-            onClick={() => setPanel((p) => (p === "quality" ? null : "quality"))}
-          >
-            画质{level === -1 ? " 自动" : ` ${levels.find((l) => l.index === level)?.label ?? ""}`}
-          </button>
-          <button
-            className={panel === "speed" ? "on" : ""}
-            onClick={() => setPanel((p) => (p === "speed" ? null : "speed"))}
-          >
-            {speed}×
-          </button>
-          <button onClick={fullscreen} title="全屏 (F)">
-            ⛶
-          </button>
-        </div>
-      )}
-
-      <div className="player-extras">
-        <button onClick={() => setMuted((m) => !m)} title={muted ? "取消静音" : "静音"}>
-          {muted ? "🔇" : "🔊"}
-        </button>
-        <input
-          className="player-volume"
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={muted ? 0 : vol}
-          onChange={(e) => changeVolume(Number(e.target.value))}
-          aria-label="音量"
-          style={{ "--pct": `${(muted ? 0 : vol) * 100}%` } as React.CSSProperties}
-        />
-      </div>
-
-      {panel === "quality" && levels.length > 0 && (
-        <div className="player-menu">
-          <button
-            className={level === -1 ? "on" : ""}
-            onClick={() => changeLevel(-1)}
-          >
-            自动
-          </button>
-          {[...levels].reverse().map((l) => (
+      {/*
+        One group, one opacity: the extras, the menus, the title and the error
+        note all fade together, because a bar that hides while its own menu is
+        open is just a broken control.
+      */}
+      <div
+        className="player-controls"
+        data-controls="1"
+        data-hidden={uiHidden ? "1" : "0"}
+        style={{
+          opacity: uiHidden ? 0 : 1,
+          transition: "opacity 240ms ease",
+          pointerEvents: uiHidden ? "none" : "auto",
+        }}
+      >
+        {levels.length > 0 && (
+          <div className="player-extras" style={fsBar(46)}>
             <button
-              key={l.index}
-              className={level === l.index ? "on" : ""}
-              onClick={() => changeLevel(l.index)}
+              className={panel === "quality" ? "on" : ""}
+              onClick={() => setPanel((p) => (p === "quality" ? null : "quality"))}
             >
-              {l.label}
+              画质{level === -1 ? " 自动" : ` ${levels.find((l) => l.index === level)?.label ?? ""}`}
             </button>
-          ))}
-        </div>
-      )}
-
-      {panel === "speed" && (
-        <div className="player-menu">
-          {SPEEDS.map((s) => (
-            <button key={s} className={speed === s ? "on" : ""} onClick={() => changeSpeed(s)}>
-              {s}×
+            <button
+              className={panel === "speed" ? "on" : ""}
+              onClick={() => setPanel((p) => (p === "speed" ? null : "speed"))}
+            >
+              {speed}×
             </button>
-          ))}
-        </div>
-      )}
+            <button onClick={fullscreen} title="全屏 (F) · 双击画面也可切换">
+              ⛶
+            </button>
+          </div>
+        )}
 
-      {err && (
-        <div className={`player-note${err.includes("重试") || err.includes("恢复") ? "" : " bad"}`}>
-          {err}
+        <div className="player-extras" style={fsBar(6)}>
+          {/*
+            The transport. Present in every mode, because the native bar is not:
+            a picture click stays inert and a double click stays ours.
+          */}
+          <button
+            data-play-toggle="1"
+            onClick={togglePlayback}
+            title={playing ? "暂停 (空格)" : "播放 (空格)"}
+          >
+            {playing ? "⏸" : "▶"}
+          </button>
+          <button onClick={() => seekBy(time - 10)} title="后退 10 秒 (←)">
+            ⟲
+          </button>
+          <input
+            className="player-seek"
+            type="range"
+            min={0}
+            max={Math.max(duration, 0.1)}
+            step={0.5}
+            value={Math.min(time, duration || 0)}
+            onChange={(e) => seekBy(Number(e.target.value))}
+            aria-label="播放进度"
+            style={{
+              flex: 1,
+              minWidth: 80,
+              WebkitAppearance: "none",
+              appearance: "none",
+              height: 4,
+              borderRadius: 2,
+              background: isFullscreen ? "rgba(255,255,255,0.4)" : "var(--border)",
+            }}
+          />
+          <span data-time="1" style={{ fontSize: 12, minWidth: 78, textAlign: "right" }}>
+            {formatSeconds(time)} / {formatSeconds(duration)}
+          </span>
+          {pipAvailable && (
+            <button
+              data-pip="1"
+              onClick={togglePip}
+              title={pipActive ? "退出画中画" : "画中画"}
+            >
+              {pipActive ? "⤢" : "⤡"}
+            </button>
+          )}
+          <button onClick={() => setMuted((m) => !m)} title={muted ? "取消静音" : "静音"}>
+            {muted ? "🔇" : "🔊"}
+          </button>
+          <input
+            className="player-volume"
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={muted ? 0 : vol}
+            onChange={(e) => changeVolume(Number(e.target.value))}
+            aria-label="音量"
+            style={{ "--pct": `${(muted ? 0 : vol) * 100}%` } as React.CSSProperties}
+          />
         </div>
-      )}
 
-      {title && <div className="player-title">{title}</div>}
+        {panel === "quality" && levels.length > 0 && (
+          <div className="player-menu" data-quality-menu="1">
+            <button
+              className={level === -1 ? "on" : ""}
+              onClick={() => changeLevel(-1)}
+            >
+              自动
+            </button>
+            {[...levels].reverse().map((l) => (
+              <button
+                key={l.index}
+                className={level === l.index ? "on" : ""}
+                onClick={() => changeLevel(l.index)}
+              >
+                {l.label}
+              </button>
+            ))}
+            {/* The remembered choice is visible, and clearable: a setting nobody
+                can undo is a setting nobody should have. */}
+            <div
+              data-remembered={remembered === null ? "none" : String(remembered)}
+              style={{
+                marginTop: 4,
+                padding: "4px 10px 0",
+                borderTop: "1px solid var(--border)",
+                fontSize: 11,
+                color: "var(--text-faint)",
+              }}
+            >
+              已记住：
+              {remembered === null
+                ? "无"
+                : remembered === -1
+                  ? "自动"
+                  : (levels.find((l) => l.index === remembered)?.label ?? String(remembered))}
+            </div>
+            <button
+              data-quality-clear="1"
+              disabled={remembered === null}
+              onClick={forgetLevel}
+            >
+              清除本条画质记忆
+            </button>
+          </div>
+        )}
+
+        {panel === "speed" && (
+          <div className="player-menu">
+            {SPEEDS.map((s) => (
+              <button key={s} className={speed === s ? "on" : ""} onClick={() => changeSpeed(s)}>
+                {s}×
+              </button>
+            ))}
+          </div>
+        )}
+
+        {err && (
+          <div className={`player-note${err.includes("重试") || err.includes("恢复") ? "" : " bad"}`}>
+            {err}
+          </div>
+        )}
+
+        {title && !isFullscreen && <div className="player-title">{title}</div>}
+      </div>
     </div>
   );
 }

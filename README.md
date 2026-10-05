@@ -25,6 +25,10 @@
 | 书架 | 在任意分类列表点标题下的 ☆ 把**整个分类**收进书架，之后从侧栏「书架」直接回去接着读；读到一半会显示进度 |
 | 划线与笔记 | 选中文字即出现「高亮 / 笔记」；划线随文章保存，下次打开还在原处；侧栏「划线」汇总全部 |
 | 目录与章节 | 标题栏「目录」列出当前列表，当前章高亮；底部上一章/下一章；读到本章末尾自动提示下一章；快捷键 `[` `]` `T` |
+| 阅读统计 | 侧栏「统计」显示今日 / 本周 / 全部读了多少篇、多少分钟，并按源分组；时长由阅读记录推断，单篇封顶 30 分钟 |
+| 音乐睡眠定时 | 🌙 定时 15/30/45/60 分钟或「本曲结束」；到点后最后 20 秒**音频本身**线性淡出到 0 再暂停，剩余时间常驻可见 |
+| 视频手感 | 全屏播放 3 秒无操作自动隐藏控件、移动鼠标立刻淡回、暂停时常显；双击画面切换全屏；缓冲时显示「缓冲中…」与已缓冲百分比 |
+| 画质记忆 | 手动选过的画质**按条目记住**，重开仍是那一档；画质菜单里可「清除本条画质记忆」 |
 | 源校验 | 分阶段体检每个源：规则 / 首页 / 列表 / 详情 / 搜索，逐项给出可执行的结论 |
 | 收藏 / 历史 / 搜索 | 常用源收藏、阅读历史回溯、单源内搜索 |
 | 跨平台 | macOS（Apple Silicon + Intel）与 Windows |
@@ -99,6 +103,34 @@
 
 只收进度在 2%–98% 之间的：刚打开没滚动的、和已经看完的，都不该出现在这里。离开阅读器或切换源时
 侧栏会重新拉取，所以读了一半退出来，下次打开就在那儿。
+
+### 阅读统计
+
+侧栏「统计」显示读了多久。**不联网、不需要任何外部服务** —— 全部由本地已有的
+`history.json` + `progress.json` 算出来。
+
+今日 / 本周 / 全部各显示篇数与时长，并按源分组列出篇数。没有记录时给一句空状态（`还没有可统计的阅读`），
+而不是三个 0。
+
+时长只能用阅读位置推断，**并且单篇封顶 30 分钟**：
+
+> 进度记录只有 `updated_at`，没有「读了多久」。所以时长是用相邻两次更新的时间差推出来的 ——
+> 晚上挂着一篇不关，次日再看就会算出「读了八小时」。封顶是为此存在的，
+> 理由写在 `src-tauri/src/reading_stats.rs` 里。
+
+实测（`pnpm test:reader-stats`）覆盖了这几个容易算错的点：
+
+```
+today: 今日 3 篇 45 分钟      week: 本周 3 篇 45 分钟      all: 全部 5 篇 1 小时 35 分钟
+by source: 源 A 3 篇 | 源 B 2 篇
+only yesterday: today "今日 0 篇 不到 1 分钟" · week "本周 0 篇 不到 1 分钟"
+across midnight: today 10 分钟 · 全部 20 分钟
+eight hours of wall clock counted as: 全部 1 篇 30 分钟     ← 封顶生效
+opened but never scrolled: 全部 1 篇 不到 1 分钟
+failure state: progress.json 读取失败 ✕ 统计没读出来 …      ← 不是白屏也不是永远转圈
+```
+
+最后一条同样是验收项：统计读不出来时必须显示错误和出路，**不能永远转圈**。
 
 ### 书架
 
@@ -220,7 +252,44 @@ pnpm test:reader    # Playwright 驱动真实浏览器
   不用翻到页面底部找上下章按钮，也不用开目录；到头时对应箭头置灰而不是绕回第一集
 - 失败分级处理：网络错误自动重试、解码错误自动恢复、其余给出明确原因 —— 不再一律甩锅给 VLC
 
-播放控制条用浏览器原生的（无障碍、可访问性更好），画质/倍速/全屏放在覆盖层。
+播放控制条现在**不再用浏览器原生的 `<video controls>`**，改用播放器自带的控制条。
+
+> **为什么换掉原生的**：Chromium 的原生控制条会**抢走手势** —— 画面单击被它拿去切播放/暂停，
+> 双击被它拿去给 `<video>` 元素自己全屏，而应用层根本不需要后者。
+> 实测 `preventDefault()` **拦不住**。两条控制条在功能上互斥，只能留一个，
+> 所以这里选了能自己管手势的那条。原生条的其他优点（无障碍）由自绘条补回来：
+> 按钮都有可读标签与 `aria-label`。
+
+自绘条上：播放/暂停、后退 10 秒、进度条、时间、画中画、画质、倍速、全屏、静音、音量。
+
+### 控制条自动隐藏、双击全屏、画质记忆
+
+- **自动隐藏**：全屏**且正在播放**时，3 秒无操作就淡出控件；移动鼠标、触摸或按键立刻淡回；
+  **暂停时永远显示**。判据是控件元素的 `computed opacity`，不是截图。
+- **双击切换全屏**：双击画面进出全屏；**单击不打断播放**。
+- **画质记忆**：手动选过的档位**按条目记住**，重开仍是那一档；画质菜单里有
+  「清除本条画质记忆」可以逐条清除。
+
+> **没有全局的「清除所有画质记忆」入口。** 记忆是按条目存的，数量等于「曾经手动选过画质的不同剧集」，
+> 不会膨胀到需要一键清空；逐条清除已经够用。
+
+- **缓冲反馈**：不再是转圈，而是「缓冲中… NN%」，用 `progress` 事件算已缓冲百分比，能继续播放时消失。
+
+实测（`pnpm test:video-controls`）：
+
+```
+buffering badge reads "缓冲中… 100%" and disappears once playback can continue
+outside fullscreen the controls stay visible (opacity 1)
+paused in fullscreen keeps them visible (opacity 1)
+after ~3s idle while playing, controls opacity 0.0154944
+a mouse move restored them (opacity 0.98036)
+a key press restored them without interrupting playback
+pausing while hidden brings the controls straight back
+a single click on the picture left playback running (t 0.0 → 0.3)
+double click put the player itself into fullscreen (player-wrap)
+after a reload the player opened at 画质 360p
+「清除本条画质记忆」 removed it from storage and went back to 自动
+```
 
 > **跨域限制**：hls.js 通过 XHR 拉取播放列表和分片，因此**视频服务器必须带
 > `Access-Control-Allow-Origin`** 才会被放行。绝大多数正规 CDN 都有；个别自建源没有，
@@ -297,6 +366,32 @@ a standalone video gets neither a picker nor chapter buttons
   > `fetch` 会被拦。走的是后端的 `fetch_text`（复用引擎那套 User-Agent 和 cookie jar）。
 
 判定只看**链接路径和标题**，不看域名 —— 否则托管在 `music.x.com` 的源会把它的视频全判成音乐。
+
+### 睡眠定时与淡出
+
+控件区有 🌙 入口，可选 15 / 30 / 45 / 60 分钟或「本曲结束」。
+
+- **淡出改的是音频本身**，不是 CSS：到点后最后 20 秒线性把 `audio.volume` 降到 0 再 `pause()`。
+  用 CSS 做淡出只会让音量条和实际音量对不上。
+- **定时状态必须看得见**：按钮上直接显示 `🌙 剩余 14:59` / `本曲结束` / `淡出中`，
+  另有一行 `aria-live` 状态。悄悄生效的定时等于没有。
+- **淡出途中可以取消**：立即停止斜坡并恢复淡出前的音量，且不打断播放。
+  实现上用 generation 计数，取消时 bump 一次，在途的那一帧下一帧就退出，不会把音量再拖下去。
+- 「本曲结束」在**切歌时自然失效**并清空状态；定时停下不会误跳到下一首。
+
+> 淡出期间音量滑块会置灰并注明「睡眠定时淡出中」，避免用户的拖动和斜坡互相覆盖。
+
+实测（`pnpm test:sleep`，逐帧采样 `audio.volume`，不是看界面文字）：
+
+```
+options offered: 15 分钟 / 30 分钟 / 45 分钟 / 60 分钟 / 本曲结束
+15-minute timer armed and visible: "🌙 剩余 15:00" / "睡眠定时已开启 · 剩余 15:00"
+track-end fade: 296 frames, volume 0.800 → 0.000, paused on 第二首 · 测试音, timer cleared
+cancel mid-fade: volume restored to 0.800, still playing, ramp flat for the following 146 frames
+timed fade: 23.0s from arming to silence (19.9s of it the ramp), volume fell monotonically to 0
+```
+
+`19.9s of it the ramp` 是实测到的斜坡长度，接近文档承诺的 20 秒。
 
 ### 验证
 
@@ -445,8 +540,8 @@ pnpm tauri build      # 打包当前平台的安装包
 ```bash
 pnpm dev              # 只启动前端（需要后端命令，无法单独使用）
 cd src-tauri
-cargo test --lib      # 138 个单元测试，不联网
-cargo clippy --all-targets
+cargo test --release --lib   # 165 个单元测试，不联网
+cargo clippy --release --all-targets   # 0 warning
 ```
 
 ### 原生窗口冒烟测试
@@ -469,6 +564,11 @@ SERIOUS_SMOKE_MEDIA=1   pnpm test:native   # 分类、搜索、音乐、视频�
 
 > 这一层不是冗余。上一轮就是靠它抓到两个躲过全部浏览器测试的缺陷：旧格式的
 > `ruleArticles: "body"` 把 101 条链接压成 1 条「文章」，以及切换源时界面停留在上一个源。
+> 本轮又抓到睡眠菜单在深色下是白底 —— 根因是 `var(--panel, #fff)` 的回退值生效，
+> 而这个缺陷在浏览器里看不出来（打包应用有自己的 CSS 加载顺序）。
+
+另有 `node scripts/gate-verify.mjs`，专门在**打包后的 exe** 里核对主题变量解析结果与空状态
+（断言 `--panel` 解析成深色而非 `#fff`、空闲时没有残留 spinner），同样是量 computed 值、不看截图。
 
 产物写在 `test-results/`（已 gitignore）。
 
@@ -509,6 +609,7 @@ src-tauri/src/
   model.rs         源结构、两种 JSON 格式的归一化
   repo.rs          源仓库合集抓取
   store.rs         本地持久化（源、历史、阅读进度、设置）
+  reading_stats.rs 阅读统计（今日/本周/全部，单篇时长封顶 30 分钟）
   commands.rs      Tauri 命令层（含 continue_reading 的筛选阈值）
 src/               React 前端
 tests/             联网集成测试（默认跳过）
@@ -518,7 +619,9 @@ tests/             联网集成测试（默认跳过）
 
 - HLS (`.m3u8`) 由内置 hls.js 播放，不再需要外部播放器；直播流未做鉴权与 DRM 支持
 - 规则里用到的 `@js` 若依赖 Legado 独有的 Java API，只覆盖了常见的一小部分
-- 部分站点依赖 JS 渲染页面，服务端拿不到内容；这类源无法解析（见下）
+- **部分依赖 JS 渲染的源仍需改规则** —— 打开渲染兜底能在 16 个这类源里救回 2 个（见下），
+  但「有条目、点进去是空页面」的那类救不了，那是规则与渲染后的 DOM 对不上
+- **阅读统计的时长是推断值**，不是精确计时：来源是进度更新时间差，单篇封顶 30 分钟
 
 ### 源可用率实测
 
@@ -528,26 +631,41 @@ tests/             联网集成测试（默认跳过）
 
 所以「可用率」只统计**本机能打开的源**，那才是引擎能力的体现。
 
-对最大的合集（2524 个源）抽 150 个：
+对合集 160 抽 150 个（一批跑完、期间工作树未变动的完整结果）：
 
 ```
-phase 1: 52 of 150 reachable from this machine in 49.3s (12 threads)
-  working       31  (60%)
-  rule-broken   18  (35%)
-  degraded       3  (6%)
-  ENGINE PASS RATE: 31/52 reachable = 60%
+collection …/id/160.json carries 176 source(s)
+phase 1: 113 of 150 reachable from this machine in 58.5s (6 threads)
+verified 113 reachable source(s) in 18.1s with 6 worker(s)
+  degraded       1  (1%)
+  rule-broken   13  (12%)
+  working       99  (88%)
+  (113 verified, 113 bucketed — every source has a verdict)
+  ENGINE PASS RATE: 99/113 reachable = 88%  (14 not handled)
+    work without a browser      1
+    declare enableJs            111
+    single-page (rule=body)     74
 ```
+
+**「113 可达 / 99 可用 = 88%」。** 四个桶之和正好等于可达数（1+13+99=113），没有「算了分母却没进任何桶」的源 ——
+审计工具现在会自己核对并打印 `every source has a verdict`，对不上时直接打出 `NO-VERDICT WARNING` 并声明下面所有比率都是临时的。
+
+> **合集会漂移，旧的对比数字已经作废。** 上一版文档写的是「最大的合集（2524 个源）」，
+> 而**合集 163 现在只返回 9 个源**（当时是 2524）。拿 163 的旧数字和今天任何一批比较都是错的，
+> 所以这里不再引用它。可达数本身也会随网络在几十的量级上浮动，因此**只有同批受控对照的数字才有可比性**。
 
 这批源的样子很说明问题：
 
 | | 数量 |
 | --- | --- |
-| 本机能打开的源 | 52 |
-| 其中声明 `enableJs` | **50** |
+| 本机能打开的源 | 113 |
+| 其中声明 `enableJs` | **111** |
 | 其中**不需要浏览器**就能用 | **1** |
-| 单页源（`ruleArticles=body`） | 16 |
+| 单页源（`ruleArticles=body`） | **74** |
 
-**几乎所有可达的源都是脚本渲染的,而只有 1 个能靠原生规则解析。** 能拿到 31 个,靠的是链接回退和单页源处理这两条兜底 —— 而不是把规则写对了。剩下的 18 个需要真正的渲染引擎。
+**88% 不等于「引擎解决了 88%」。** 这一批里 **74/113 是单页源**（`ruleArticles=body`），
+高分主要来自「单页源处理」和「链接回退」两条兜底，而不是把规则写对了。
+另一批（合集 77）单页源只有 12 个，通过率就低得多 —— **通过率跟着源的构成走，不跟着引擎能力走。**
 
 ### 渲染引擎这条路走不走得通?——已经实测过了
 
@@ -586,25 +704,85 @@ render_probe: loaded=true html=974 links=6 title="脚本渲染页"
 > `eval_with_callback` 返回的是 **JSON 编码后的值**:字符串带引号、`<` 写成 `<`。
 > 直接当 HTML 喂给解析器会得到一个「什么都没有」的页面,而且不报任何错 —— 这个坑踩过一次。
 
-### 但它默认是关的,因为实测没有收益
+### 「实测零收益」这个结论是错的 —— 它测在了一条不会调用渲染器的路径上
 
-夹具里有一个页面,它的链接**全部由脚本生成**,服务出去的 HTML 里一个 `<a>` 都没有:
+早前这里写过:「拿到 14 个真实源做开关对照,结果完全一样」。
+
+**这个对比在结构上不可能测出任何东西。** 那一遍是用 `check_all` 跑的,而 `verify::probe_list`
+(`engine/verify.rs`) 直接 `fetch_ok` + `parse_list`,**从不查 `should_render`**;全仓唯一的渲染调用点在
+`browse.rs:666` 的 `load_page` —— 读者真正打开列表的那条路径。
+所以在审计路径上,`render_js` 是个**恒为 0 的常量**,开与不开必然一样。
+
+**这不是「渲染没用」的证据,是无效测量。该结论撤回。**
+
+### 重新量:读者路径上到底有没有收益
+
+`node scripts/render-ab.mjs` 对 **16 个脚本构建、且不开渲染就取不到条目的真实源**做受控对照:
+同一个应用实例、同一批导入、每遍之前清空缓存、顺序固定 **off → on → off**(两遍 off 用来暴露站点漂移)。
+
+两个独立跑批的结果:
 
 ```
-a script-built page yielded 6 openable items through the renderer
+engine 那遍:  off 0 working · on 2 working · off 0 working     → 净 +2
+我这遍:       off 1 working · on 2 working · off 0 working     → 净 +1
 ```
 
-机制确实成立。**但拿到 14 个真实源做开关对照,结果完全一样:**
+两遍的 on 都是 2,而且**是同样两个**:`box+apk 蓝奏直链√`、`黑料社区`。
 
-```
-render off: 1 ok / 8 warn / 5 failed of 14
-render on : 1 ok / 8 warn / 5 failed of 14
-```
+把每一遍的 working 名单摊开对比,结论就闭合了:
 
-在真实站点上它没救回任何一个源,却要为每个解析失败的页面付约 2 秒和一个离屏窗口。
+| | pass 1 (off) | pass 2 (on) | pass 3 (off) |
+| --- | --- | --- | --- |
+| `box+apk 蓝奏直链√` | — | **working** | — |
+| `黑料社区` | — | **working** | — |
+| `影视森林` | **working** | — | — |
 
-所以:**默认关闭,开关放在设置里**。等有证据表明它对某个具体合集有效再打开 —— 而不是让所有用户默认
-承担这个开销。
+- `box+apk` 和 `黑料社区` **在两遍 off 里从未出现、在 on 遍出现** → **渲染稳定救回了它们**。
+- `影视森林` 在 **pass 1(渲染是关的)** 就是 working → **它那次成功与渲染无关**。
+  单独再跑它五遍 off(`SERIOUS_AB_NAMES=影视森林`),**五遍全是 0 working**,进一步证明它是个
+  间歇性源,不是渲染的功劳。
+
+所以诚实的说法是:**稳定增益 = 2 / 16(12.5%),外加 1 个与渲染无关的间歇源。**
+单遍净增益会在 **1–2 之间浮动**,取决于 `影视森林` 那天有没有恰巧成功 ——
+engine 那遍两遍 off 都是 0(净 +2),我这遍 off 是 1 和 0(净 +1)。
+两个数字都真实,合起来才是完整的噪声画像。**所以这里不写「12.5%」这个干净数**,
+免得把噪声藏起来。
+
+### 所以仍然默认关闭 —— 但理由换了
+
+不是「测出没用」,而是**收益确实存在、但只覆盖 16 个源里的 2 个,不值得让所有用户为每个解析失败的页面付费**。
+
+| | |
+| --- | --- |
+| 触发条件 | 一次列表抓取里,**普通解析拿不到任何可打开条目** **且** 源声明 `enableJs` |
+| 代价 | 离屏窗口 + 固定 2.5 秒 settle,读 DOM 最多 8 秒 |
+| 缓存 | 同 URL 缓存 120 秒,最多 8 条 |
+| 开关 | 默认**关**,在设置里 |
+
+只有「解析不出条目」才渲染,正常解析的源一秒都不多花。
+
+> **渲染解决不了什么**:它只救「拿不到条目」。有条目、点进去却是空页面的源,渲染救不了 ——
+> 那属于规则与渲染后的 DOM 对不上,是另一类问题。
+
+剩下 14 个仍然失败的,原因分类:脚本没生成链接 5 个、规则与渲染后 DOM 对不上 8 个、传输层/限流 1 个。
+**有收益不等于够用。**
+
+### 默认值曾经不一致 —— 用户没同意就花掉他 2 秒
+
+`RENDER_ENABLED` 的代码默认值原本是 `true`,而 `Settings::render_js` 是 `false`,**两者相反**。
+后果:用户偏好生效之前走到验证的那条路径,会在**用户没有同意**的情况下走昂贵分支。
+已改为 `false`,并补了测试 `the_engine_default_matches_the_stored_preference`,
+断言的是**两个默认值必须相等** —— 以后改一边忘了另一边,测试立刻失败。
+
+### 测量时踩过的坑:别用 `Select-Object -First` 读测试输出
+
+用 `cargo test … | Select-String … | Select-Object -First 12` 读审计结果时,
+**`-First N` 会掐断上游管道,测试进程在汇总打印之后、断言执行之前被杀**。
+汇总是在断言之前打印的,所以被掐断的那一遍照样给你一份**看起来完整的漂亮报告**。
+
+> 本轮就中过两次招:一次让合集 77 出现「37 可达但只有 36 个有结论」的假象,
+> 一次让合集 160 出现分母对不上的数字。**正确做法:输出落文件,再看尾部有没有 `test result: ok`。**
+> 审计工具现在也会自己核对「四桶之和 == 可达数」,对不上就打出 `NO-VERDICT WARNING` 并声明所有比率都是临时的。
 
 ### 规则失效时的链接回退
 

@@ -185,11 +185,15 @@ pub struct Settings {
     pub player_rate: f32,
     /// Render script-built pages when the ordinary fetch yields nothing.
     ///
-    /// Off by default. The mechanism is proven — a page whose links are built
-    /// entirely by script does yield a list through it — but measured over 14
-    /// real sources it changed nothing, while costing an offscreen window and
-    /// a couple of seconds on every page that fails to parse. So it stays
-    /// opt-in until there is evidence it earns that.
+    /// Off by default, but the engine still renders conditionally: on a list
+    /// page where ordinary parsing produced nothing openable *and* the source
+    /// declares `enableJs`, one offscreen render is tried.
+    ///
+    /// Measured over 16 real sources, that path recovered 2 (12.5%) — enough to
+    /// justify the fallback, nowhere near enough to pay an offscreen window and
+    /// ~2 seconds on every source. An earlier "zero benefit" reading came from
+    /// the audit path, which never calls the renderer at all, so it could not
+    /// have measured anything.
     #[serde(default)]
     pub render_js: bool,
 }
@@ -553,7 +557,7 @@ impl Store {
     pub fn shelf(&self) -> Vec<ShelfEntry> {
         let Ok(inner) = self.inner.lock() else { return Vec::new() };
         let mut list = inner.shelf.clone();
-        list.sort_by(|a, b| b.added_at.cmp(&a.added_at));
+        list.sort_by_key(|e| std::cmp::Reverse(e.added_at));
         list
     }
 
@@ -593,7 +597,7 @@ impl Store {
     pub fn highlights(&self) -> Vec<Highlight> {
         let Ok(inner) = self.inner.lock() else { return Vec::new() };
         let mut list = inner.highlights.clone();
-        list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        list.sort_by_key(|h| std::cmp::Reverse(h.created_at));
         list
     }
 
@@ -602,7 +606,7 @@ impl Store {
         let Ok(inner) = self.inner.lock() else { return Vec::new() };
         let mut list: Vec<Highlight> =
             inner.highlights.iter().filter(|h| h.url == url).cloned().collect();
-        list.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        list.sort_by_key(|h| h.created_at);
         list
     }
 
@@ -642,6 +646,15 @@ impl Store {
         inner.highlights.retain(|h| h.id != id);
         self.write_atomic("highlights.json", &inner.highlights)?;
         Ok(())
+    }
+
+    /// Every remembered reading position, with the time it was last saved.
+    ///
+    /// Reading statistics need the timestamps as well as the ratios, and need to
+    /// walk all of them at once, so they cannot be served by looking URLs up one
+    /// at a time.
+    pub fn progress_all(&self) -> HashMap<String, Progress> {
+        self.inner.lock().map(|i| i.progress.clone()).unwrap_or_default()
     }
 
     /// How far through `url` the reader had got, if it was ever opened.

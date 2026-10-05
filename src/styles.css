@@ -14,6 +14,13 @@
   --radius: 8px;
   --sidebar-w: 300px;
 
+  /* Aliases for surfaces that are written inline by components which cannot know
+     the palette (`var(--panel, #fff)` in the music sleep menu, for instance).
+     Without them the fallback wins and a dark app gets a white popup. Pointing
+     them at the real tokens keeps every theme working from one source. */
+  --panel: var(--bg-elevated);
+  --line: var(--border);
+
   /* Reading surface. Overridden by the theme classes below and driven by the
      reader preferences, so the typography controls have a single source. */
   --reader-size: 17px;
@@ -1059,6 +1066,7 @@ select:focus {
 }
 
 .player-volume::-webkit-slider-thumb,
+.player-seek::-webkit-slider-thumb,
 .music-volume::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -1239,6 +1247,101 @@ select:focus {
   border-radius: 6px;
   cursor: zoom-in;
   display: block;
+}
+
+/* ------------------------------------------------------------------ */
+/* Reading statistics                                                  */
+/* ------------------------------------------------------------------ */
+
+.stats-body {
+  padding: 0 18px 28px;
+}
+
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.stats-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stats-label {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.stats-figure {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.stats-num {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.stats-unit {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.stats-time {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.stats-sources {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 14px 10px;
+}
+
+.stats-subhead {
+  font-size: 12px;
+  color: var(--text-faint);
+  padding: 8px 0 4px;
+}
+
+.stats-src-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.stats-src-row:last-child {
+  border-bottom: none;
+}
+
+.stats-src-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stats-src-count {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.stats-note {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.7;
 }
 
 /* ------------------------------------------------------------------ */

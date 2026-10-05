@@ -417,12 +417,46 @@ fn field_html(rule: &str, container: &str, allow_text: bool) -> String {
     first_non_empty(&doc.eval(rule))
 }
 
+/// Split `selector@js:code` into the selector and the script that follows it.
+///
+/// Legado allows a script to trail the selector, and live sources use it:
+/// `$.address@js:result.replace(/rtmp:\//, "")`. The engine handled only the
+/// prefix form `@js:…`, so this whole string was handed to the JSONPath parser,
+/// which matched nothing and the source yielded items with no link at all.
+fn split_js_suffix(rule: &str) -> Option<(&str, &str)> {
+    let at = rule.rfind("@js:")?;
+    let (selector, rest) = rule.split_at(at);
+    Some((selector, rest[4..].trim()))
+}
+
+/// Evaluate a `selector@js:code` rule: the selector picks the value, and that
+/// value is what `result` means inside the script.
+fn apply_js_suffix(rule: &str, value: &Value) -> Option<String> {
+    let (selector, code) = split_js_suffix(rule)?;
+    let picked = if selector.trim().is_empty() {
+        value.clone()
+    } else {
+        let raw = selector::eval_json(value, selector)
+            .into_iter()
+            .find(|s| !s.trim().is_empty())?;
+        Value::String(raw)
+    };
+    Some(clean_text(&js::eval_to_string(code, &picked)))
+}
+
 /// Evaluate a field rule against a JSON node, with CMS-API defaults.
 ///
 /// The fallback keys are chosen per field: a single shared key list would let
 /// `{"title","url"}` satisfy the image and date fields too.
 fn field_json(rule: &str, value: &Value, field_name: &str) -> String {
     if !rule.trim().is_empty() {
+        // `selector@js:code` before the bare `@js:` form: the leading selector
+        // is not a script, and must not be mistaken for one.
+        if let Some(out) = apply_js_suffix(rule, value) {
+            if !out.is_empty() {
+                return out;
+            }
+        }
         if js::looks_like_js(rule) {
             js::set_script_headers(None);
             return clean_text(&js::eval_to_string(rule, value));
@@ -626,11 +660,10 @@ pub fn load_page(src: &Source, req: &PageRequest) -> crate::error::AppResult<Art
     let (items, next) = parse_list(src, &resp.body, &resp.url);
 
     // The cheap path produced nothing usable on a source that asks for
-    // JavaScript. "Nothing usable" covers two shapes: no items at all, and the
-    // single-page reading that yields one item with no address — which is what
-    // a script-built page looks like before rendering.
-    let nothing_openable = items.is_empty() || items.iter().all(|i| i.link.is_empty());
-    let rendered = if nothing_openable && should_render(src, &resp.body, &resp.url) {
+    // JavaScript. Rendering is offered only in that case, never on a page that
+    // already parsed: an offscreen window costs a couple of seconds, and
+    // [`should_render`] is where that decision is made and tested.
+    let rendered = if should_render_now(src, &items, &resp.body, &resp.url) {
         render_cached(&resp.url).map(|html| parse_list(src, &html, &resp.url))
     } else {
         None
@@ -649,27 +682,62 @@ pub fn load_page(src: &Source, req: &PageRequest) -> crate::error::AppResult<Art
 
 /// Is rendering this page worth a couple of seconds?
 ///
-/// Three conditions, all of them must hold: the source declares it needs
-/// JavaScript, rendering is actually available, and the page we got looks like
-/// a shell rather than a listing — a full HTML document whose own links are
-/// already thin would just render to the same nothing.
-fn should_render(src: &Source, body: &str, url: &str) -> bool {
-    // All three must hold, and each one is a reason not to bother:
-    // the source has to ask for JavaScript, a renderer has to be registered,
-    // and the page we fetched must be a real document rather than a dead one.
+/// Every condition must hold, and each one is a reason not to bother:
+///
+/// * the source declares it needs JavaScript — nobody else should pay for it;
+/// * the user has not switched the fallback off;
+/// * a renderer is actually registered;
+/// * the ordinary fetch produced nothing openable — **this is what keeps the
+///   cost off healthy sources**. Rendering a listing that already parsed would
+///   buy nothing and cost an offscreen window plus a couple of seconds;
+/// * the response is a real document rather than an empty body, and the URL is
+///   something a webview can be pointed at.
+///
+/// The two ambient facts (`switch_on`, `renderer_ready`) are parameters rather
+/// than reads of globals so the whole decision can be tested without a webview;
+/// [`should_render_now`] supplies the live values.
+fn should_render(
+    src: &Source,
+    items: &[ArticleItem],
+    body: &str,
+    url: &str,
+    switch_on: bool,
+    renderer_ready: bool,
+) -> bool {
     src.enable_js
-        && render_enabled()
-        && rendered_html_available()
+        && switch_on
+        && renderer_ready
+        && nothing_openable(items)
         && !body.trim().is_empty()
         && url.starts_with("http")
 }
 
-/// Whether the browser-render fallback is switched on.
+/// The same decision, with the live switch and renderer state.
 ///
-/// A setting rather than a constant: it costs an offscreen window and a couple
-/// of seconds per page, so a user on a slow machine may want it off.
+/// "Nothing openable" covers two shapes: no items at all, and the single-page
+/// reading that yields one item with no address — which is what a script-built
+/// page looks like before it is rendered.
+fn nothing_openable(items: &[ArticleItem]) -> bool {
+    !items.iter().any(|i| !i.link.trim().is_empty())
+}
+
+fn should_render_now(src: &Source, items: &[ArticleItem], body: &str, url: &str) -> bool {
+    should_render(src, items, body, url, render_enabled(), rendered_html_available())
+}
+
+/// Whether the browser-render fallback starts switched on.
+///
+/// Off, matching [`crate::store::Settings::render_js`]'s own default. It used to
+/// start `true` here while the stored preference said `false`, so any path that
+/// verified a source before the preference had been applied rendered anyway —
+/// the expensive branch without the user having opted in. The measured
+/// behaviour justifies the choice: over 16 script-built sources, rendering
+/// rescued 2 (12.5%), which is worth having and not worth paying for on every
+/// source by default.
+const RENDER_DEFAULT: bool = false;
+
 static RENDER_ENABLED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(true);
+    std::sync::atomic::AtomicBool::new(RENDER_DEFAULT);
 
 pub fn set_render_enabled(on: bool) {
     RENDER_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
@@ -930,6 +998,44 @@ fn absolutize_html(html: &str, base_url: &str) -> String {
             format!("{attr}={quote}{abs}{quote}")
         })
         .into_owned()
+}
+
+#[cfg(test)]
+mod suffix_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A live source's rule, verbatim in shape.
+    fn address() -> Value {
+        json!({ "address": "rtmp://live.example.com/stream", "title": "某直播间" })
+    }
+
+    #[test]
+    fn a_script_after_the_selector_runs_on_the_selected_value() {
+        let out = field_json(r#"$.address@js:result.replace(/^rtmp:\/\//, "")"#, &address(), "ruleLink");
+        assert_eq!(out, "live.example.com/stream");
+    }
+
+    #[test]
+    fn a_bare_script_still_works() {
+        let out = field_json("@js:result.title", &address(), "ruleTitle");
+        assert_eq!(out, "某直播间");
+    }
+
+    #[test]
+    fn a_plain_selector_is_untouched() {
+        let out = field_json("$.title", &address(), "ruleTitle");
+        assert_eq!(out, "某直播间");
+    }
+
+    #[test]
+    fn a_missing_key_falls_through_to_the_field_defaults() {
+        // Nothing to select, so the script never runs and the usual CMS keys
+        // still get their chance rather than the row coming back blank.
+        let value = json!({ "title": "备用" });
+        let out = field_json("$.nope@js:result", &value, "ruleTitle");
+        assert_eq!(out, "备用");
+    }
 }
 
 #[cfg(test)]
@@ -1268,5 +1374,90 @@ mod tests {
         let (html, text) = extract_content(&src, body, None);
         assert!(html.contains("正文内容"));
         assert!(text.contains("正文内容"));
+    }
+
+    // ---- the offscreen render gate -----------------------------------------
+    //
+    // Rendering is the only lever left on sources that build their content in
+    // the browser, and it costs an offscreen window plus a couple of seconds.
+    // These pin the rule that keeps that cost off sources that do not need it.
+
+    fn js_source() -> Source {
+        Source { source_url: "https://x.com".into(), enable_js: true, ..Default::default() }
+    }
+
+    fn open_item() -> ArticleItem {
+        ArticleItem { title: "第一章".into(), link: "https://x.com/a".into(), ..Default::default() }
+    }
+
+    #[test]
+    fn renders_when_a_js_source_yields_nothing_openable() {
+        // The one case the fallback exists for: the source asks for a browser
+        // and the ordinary fetch came back with nothing to open.
+        assert!(should_render(&js_source(), &[], "<html></html>", "https://x.com/", true, true));
+    }
+
+    #[test]
+    fn a_single_item_without_an_address_still_counts_as_nothing() {
+        // What a script-built page looks like before rendering: one entry, and
+        // no link to open.
+        let orphan = ArticleItem { title: "首页".into(), ..Default::default() };
+        assert!(should_render(
+            &js_source(),
+            std::slice::from_ref(&orphan),
+            "<html></html>",
+            "https://x.com/",
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn never_renders_a_page_that_already_parsed() {
+        // The branch that matters for cost: a healthy listing must not pay for
+        // an offscreen window.
+        assert!(!should_render(
+            &js_source(),
+            &[open_item()],
+            "<html><a href='/a'>A</a></html>",
+            "https://x.com/",
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn respects_the_users_switch() {
+        assert!(!should_render(&js_source(), &[], "<html></html>", "https://x.com/", false, true));
+    }
+
+    #[test]
+    fn needs_a_registered_renderer() {
+        assert!(!should_render(&js_source(), &[], "<html></html>", "https://x.com/", true, false));
+    }
+
+    #[test]
+    fn never_renders_a_source_that_does_not_declare_javascript() {
+        let plain = Source { source_url: "https://x.com".into(), ..Default::default() };
+        assert!(!should_render(&plain, &[], "<html></html>", "https://x.com/", true, true));
+    }
+
+    #[test]
+    fn never_renders_an_empty_body_or_a_non_http_address() {
+        let src = js_source();
+        assert!(!should_render(&src, &[], "   ", "https://x.com/", true, true));
+        assert!(!should_render(&src, &[], "<html></html>", "file:///tmp/x.html", true, true));
+        assert!(!should_render(&src, &[], "<html></html>", "magnet:?xt=urn:btih:1", true, true));
+    }
+
+    #[test]
+    fn the_engine_default_matches_the_stored_preference() {
+        // The engine and the settings store have to agree on the default, or a
+        // source verified before the preference is applied renders anyway.
+        assert_eq!(
+            RENDER_DEFAULT,
+            crate::store::Settings::default().render_js,
+            "the render fallback and Settings::render_js disagree about the default"
+        );
     }
 }

@@ -4,6 +4,7 @@ import { ArticleList } from "./components/ArticleList";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { Reader } from "./components/Reader";
 import { RepoBrowser } from "./components/RepoBrowser";
+import { ReaderStatsPanel } from "./components/ReaderStatsPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ShelfPanel } from "./components/ShelfPanel";
 import { HighlightsPanel } from "./components/HighlightsPanel";
@@ -19,6 +20,7 @@ type View =
   | { kind: "reader"; item: ArticleItem }
   | { kind: "history" }
   | { kind: "shelf" }
+  | { kind: "stats" }
   | { kind: "highlights" }
   | { kind: "verify" }
   | { kind: "settings" };
@@ -302,6 +304,7 @@ export default function App() {
         onOpenRepo={() => setShowRepo(true)}
         onOpenHistory={() => setView({ kind: "history" })}
         onOpenShelf={() => setView({ kind: "shelf" })}
+        onOpenStats={() => setView({ kind: "stats" })}
         shelfCount={shelf.length}
         onOpenHighlights={() => setView({ kind: "highlights" })}
         highlightCount={highlightCount}
@@ -411,6 +414,10 @@ export default function App() {
 
         {view.kind === "shelf" && (
           <ShelfPanel onOpen={openShelfEntry} onClose={() => setView({ kind: "list" })} />
+        )}
+
+        {view.kind === "stats" && (
+          <ReaderStatsPanel onClose={() => setView({ kind: "list" })} />
         )}
 
         {view.kind === "highlights" && (

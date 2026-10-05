@@ -34,6 +34,22 @@ const browser = await chromium.launch({
 const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
 let failed = false;
 
+// `duration` stays NaN until the element has metadata. Waiting on
+// `.player-extras` is not enough: that bar renders immediately, so right after
+// switching away from the broken stream and back, `currentTime` gets set to
+// NaN and the browser throws "provided double value is non-finite". Seeking by
+// a fraction of the runtime needs a real duration.
+async function waitForDuration() {
+  await page.waitForFunction(
+    () => {
+      const v = document.querySelector(".player-wrap video");
+      return !!v && Number.isFinite(v.duration) && v.duration > 0;
+    },
+    null,
+    { timeout: 20000 },
+  );
+}
+
 try {
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20000 });
   await page.waitForSelector(".player-wrap video", { timeout: 15000 });
@@ -139,6 +155,7 @@ try {
 
   // -- next-episode prompt --------------------------------------------------
   // Jump to the very end so `ended` fires, then check the countdown appears.
+  await waitForDuration();
   await page.evaluate(() => {
     const v = document.querySelector(".player-wrap video");
     v.currentTime = Math.max(0, v.duration - 0.15);
@@ -159,6 +176,7 @@ try {
   // Reload back to the working stream first.
   await page.selectOption("select", { label: "HLS 多码率" });
   await page.waitForSelector(".player-extras", { timeout: 20000 });
+  await waitForDuration();
 
   await page.evaluate(async () => {
     const v = document.querySelector(".player-wrap video");
