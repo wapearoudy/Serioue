@@ -24,7 +24,10 @@
     "test:video": "node scripts/video-test.mjs",
     "test:episodes": "node scripts/episode-test.mjs",
     "test:sleep": "node scripts/music-sleep-test.mjs",
-    "test:video-controls": "node scripts/video-controls-test.mjs"
+    "test:video-controls": "node scripts/video-controls-test.mjs",
+    "test:queue-lyrics": "node scripts/music-queue-lyrics-test.mjs",
+    "test:tts": "node scripts/reader-tts-test.mjs",
+    "test:update-channel": "node scripts/update-channel-test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
