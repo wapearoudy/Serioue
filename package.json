@@ -34,7 +34,8 @@
     "test:error-banners": "node scripts/reader-error-test.mjs",
     "test:nav": "node scripts/reader-nav-test.mjs",
     "test:gallery": "node scripts/gallery-test.mjs",
-    "test:settings": "node scripts/reader-settings-test.mjs"
+    "test:settings": "node scripts/reader-settings-test.mjs",
+    "test:modal": "node scripts/reader-modal-test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
