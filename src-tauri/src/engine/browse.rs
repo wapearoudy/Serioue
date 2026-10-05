@@ -5,6 +5,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// A normalized list item ready for the UI.
 #[derive(Debug, Clone, Serialize, Default)]
@@ -556,6 +557,60 @@ fn find_next_page(
 }
 
 /// Fetch and parse one page of a category.
+/// Renders a URL in a webview and returns its post-JavaScript HTML.
+///
+/// The engine has no handle on the window, so the render path is injected at
+/// startup by the command layer. When nothing is registered — in unit tests,
+/// or on a build without webviews — this returns `None` and every caller falls
+/// back to what the ordinary fetch produced.
+pub type RenderFn = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+static RENDERER: OnceLock<Mutex<Option<RenderFn>>> = OnceLock::new();
+
+/// Register the browser-backed fetcher. Called once during startup.
+pub fn set_renderer(f: RenderFn) {
+    if let Ok(mut slot) = RENDERER.get_or_init(|| Mutex::new(None)).lock() {
+        *slot = Some(f);
+    }
+}
+
+/// Render `url`, if a renderer is registered.
+pub fn rendered_html(url: &str) -> Option<String> {
+    let guard = RENDERER.get()?.lock().ok()?;
+    let render = guard.as_ref()?;
+    render(url)
+}
+
+/// A page fetched by rendering rather than by a plain request.
+///
+/// Rendering costs a couple of seconds, so the result is held briefly: the
+/// reader opens the same page repeatedly (a listing, then an article, then the
+/// contents) and re-rendering each time would be painful.
+static RENDER_CACHE: Lazy<Mutex<Vec<(String, std::time::Instant, String)>>> =
+    Lazy::new(|| Mutex::new(Vec::new()));
+
+const RENDER_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(120);
+const RENDER_CACHE_MAX: usize = 8;
+
+/// Render `url`, reusing a recent result when there is one.
+pub fn render_cached(url: &str) -> Option<String> {
+    let now = std::time::Instant::now();
+    if let Ok(mut cache) = RENDER_CACHE.lock() {
+        cache.retain(|(_, at, _)| now.duration_since(*at) < RENDER_CACHE_TTL);
+        if let Some((_, _, html)) = cache.iter().find(|(u, _, _)| u == url) {
+            return Some(html.clone());
+        }
+    }
+    let html = rendered_html(url)?;
+    if let Ok(mut cache) = RENDER_CACHE.lock() {
+        if cache.len() >= RENDER_CACHE_MAX {
+            cache.remove(0);
+        }
+        cache.push((url.to_string(), now, html.clone()));
+    }
+    Some(html)
+}
+
 pub fn load_page(src: &Source, req: &PageRequest) -> crate::error::AppResult<ArticlePage> {
     let raw = match &req.next_url {
         Some(u) if !u.trim().is_empty() => u.clone(),
@@ -564,11 +619,50 @@ pub fn load_page(src: &Source, req: &PageRequest) -> crate::error::AppResult<Art
     let url = absolute_url(raw.trim(), &src.source_url);
 
     js::set_script_headers(Some(src.headers()));
-    let resp = fetch::fetch_ok(Some(src), &url)?;
+    let resp = fetch::fetch_ok(Some(src), &url);
     js::set_script_headers(None);
+    let resp = resp?;
 
     let (items, next) = parse_list(src, &resp.body, &resp.url);
-    Ok(ArticlePage { items, next, final_url: resp.url })
+
+    // The cheap path produced nothing usable on a source that asks for
+    // JavaScript. "Nothing usable" covers two shapes: no items at all, and the
+    // single-page reading that yields one item with no address — which is what
+    // a script-built page looks like before rendering.
+    let nothing_openable = items.is_empty() || items.iter().all(|i| i.link.is_empty());
+    let rendered = if nothing_openable && should_render(src, &resp.body, &resp.url) {
+        render_cached(&resp.url).map(|html| parse_list(src, &html, &resp.url))
+    } else {
+        None
+    };
+
+    match rendered {
+        // Rendering gave us something we can actually open; prefer it.
+        Some((new_items, new_next))
+            if !new_items.is_empty() && new_items.iter().any(|i| !i.link.is_empty()) =>
+        {
+            Ok(ArticlePage { items: new_items, next: new_next.or(next), final_url: resp.url })
+        }
+        _ => Ok(ArticlePage { items, next, final_url: resp.url }),
+    }
+}
+
+/// Is rendering this page worth a couple of seconds?
+///
+/// Three conditions, all of them must hold: the source declares it needs
+/// JavaScript, rendering is actually available, and the page we got looks like
+/// a shell rather than a listing — a full HTML document whose own links are
+/// already thin would just render to the same nothing.
+fn should_render(src: &Source, body: &str, url: &str) -> bool {
+    // All three must hold, and each one is a reason not to bother:
+    // the source has to ask for JavaScript, a renderer has to be registered,
+    // and the page we fetched must be a real document rather than a dead one.
+    src.enable_js && rendered_html_available() && !body.trim().is_empty() && url.starts_with("http")
+}
+
+/// Whether a renderer has been registered.
+pub fn rendered_html_available() -> bool {
+    RENDERER.get().and_then(|s| s.lock().ok()).map(|s| s.is_some()).unwrap_or(false)
 }
 
 /// The category tabs for a source, with a default entry when it declares none.

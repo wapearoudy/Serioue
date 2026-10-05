@@ -25,6 +25,16 @@ pub fn run() {
                 cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
 
+            // Give the engine a way to render a page when the ordinary fetch
+            // finds nothing on a source that needs JavaScript. Registered here
+            // because only the app holds a window handle.
+            {
+                let handle = app.handle().clone();
+                engine::browse::set_renderer(Arc::new(move |url: &str| {
+                    render_probe::fetch_rendered(&handle, url).ok()
+                }));
+            }
+
             // Check for a new version shortly after launch. Failures are
             // swallowed so an offline machine is never greeted by an error.
             let handle = app.handle().clone();
@@ -54,6 +64,7 @@ pub fn run() {
             commands::list_history,
             commands::clear_history,
             commands::render_probe,
+            commands::render_html,
             commands::continue_reading,
             commands::get_progress,
             commands::save_progress,

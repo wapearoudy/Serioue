@@ -590,7 +590,63 @@ try {
     console.log("  a script-built document came back through the webview");
   }
 
-    // -- Music and video in the packaged app ---------------------------------
+    // -- the browser-render fallback -----------------------------------------
+  // A source that needs JavaScript, whose page contains no links until the
+  // script runs. This is the shape the audit says dominates real collections.
+  if (fixtureBase) {
+    console.log("  (render fallback)");
+    const jsResult = await page.evaluate(
+      async ([base]) => {
+        await window.__TAURI_INTERNALS__.invoke("import_from_text", {
+          text: JSON.stringify([
+            {
+              sourceName: "JS夹具",
+              sourceUrl: `${base}/rendered.html`,
+              sourceGroup: "smoke",
+              enableJs: true,
+            },
+          ]),
+          name: "smoke",
+        });
+        const all = await window.__TAURI_INTERNALS__.invoke("list_sources", { filter: null });
+        const src = all.find((s) => s.name === "JS夹具");
+        if (!src) return { error: "source not stored" };
+        // Two diagnostics: that the flag survived import, and that the renderer
+        // itself is reachable from the running app.
+        const direct = await window.__TAURI_INTERNALS__
+          .invoke("render_html", { url: `${base}/rendered.html` })
+          .then((h) => ({ len: h.length }))
+          .catch((e) => ({ error: String(e) }));
+        const listing = await window.__TAURI_INTERNALS__.invoke("load_page", {
+          args: { id: src.id, url: null, page: 1, next: null },
+        });
+        return {
+          jsEnabled: src.js_enabled,
+          direct,
+          items: listing.items.map((i) => ({ title: i.title, link: i.link })),
+        };
+      },
+      [fixtureBase],
+    );
+
+    assert.ok(!jsResult.error, jsResult.error ?? "");
+    console.log(
+      `  fixture declares enableJs=${jsResult.jsEnabled}; render_html returned ` +
+        `${jsResult.direct.len ?? 0} chars`,
+    );
+    const openable = jsResult.items.filter((i) => i.link).length;
+    assert.ok(
+      openable >= 3,
+      `the render fallback produced ${openable} openable item(s) of ${jsResult.items.length}: ` +
+        `${JSON.stringify(jsResult.items.slice(0, 2))}`,
+    );
+    console.log(
+      `  a script-built page yielded ${openable} openable items through the renderer: ` +
+        `${JSON.stringify(jsResult.items.slice(0, 2).map((i) => i.title))}`,
+    );
+  }
+
+  // -- Music and video in the packaged app ---------------------------------
     // These paths had only ever been covered by browser tests; two real bugs
     // last round hid behind that gap.
     if (fixtureBase) {

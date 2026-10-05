@@ -523,6 +523,24 @@ pub async fn cancel_check(state: State<'_, AppState>) -> AppResult<()> {
 // Library: history, collections, settings, cache
 // ---------------------------------------------------------------------------
 
+/// Render a page in an offscreen webview and return its post-JavaScript HTML.
+///
+/// The engine calls this only as a fallback, when an ordinary fetch of a
+/// script-built source produced nothing. It is exposed as a command so the
+/// frontend can show what the fallback would have found.
+#[tauri::command]
+pub async fn render_html(app: tauri::AppHandle, url: String) -> AppResult<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::render_probe::fetch_rendered(&app, &url));
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(40)) {
+        Ok(Ok(html)) => Ok(html),
+        Ok(Err(e)) => Err(AppError::other(e)),
+        Err(e) => Err(AppError::other(format!("渲染超时: {e}"))),
+    }
+}
+
 /// Measure whether a rendered DOM can be read back from an offscreen webview.
 ///
 /// This exists to settle a design question with a number rather than an
