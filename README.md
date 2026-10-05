@@ -462,14 +462,17 @@ a track with no lyric file shows no panel
 3. **发布** — 推送一个 tag：
 
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v0.1.3
+   git push origin v0.1.3
    ```
 
-   GitHub Actions 会自动为 macOS（ARM + Intel）和 Windows 构建、签名并创建 Release 草稿。
-   检查无误后在 Releases 页面点 **Publish** 即可对外发布。
+   GitHub Actions 会自动为 macOS（ARM + Intel）和 Windows 构建、签名，并**直接发布** Release。
+   推 tag 就是全部步骤，不需要再去 Releases 页面点任何按钮。
 
-   > Release 默认建为草稿（`releaseDraft: true`），确认产物完整再发布。
+   > `releaseDraft: false`，不再做草稿。v0.1.2 恰恰是因为留了「手工点 Publish」这一步，
+   > 结果对外发布的 Release 里只有源码压缩包、没有安装包，`releases/latest/download/latest.json`
+   > 取不到 —— 用户既下载不了也更新不了，而 CI 那次还显示绿色。现在改成推 tag 即发布，
+   > 并且 CI 会回头检查产物：`latest.json` 和至少一个 `.sig` 没挂上，这次运行直接标红。
 
 ### 工作方式
 
