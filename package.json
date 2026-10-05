@@ -31,7 +31,8 @@
     "test:video-ux": "node scripts/video-ux-test.mjs",
     "test:list-ux": "node scripts/reader-list-test.mjs",
     "test:music-memory": "node scripts/music-memory-test.mjs",
-    "test:error-banners": "node scripts/reader-error-test.mjs"
+    "test:error-banners": "node scripts/reader-error-test.mjs",
+    "test:nav": "node scripts/reader-nav-test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
