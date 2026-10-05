@@ -118,6 +118,37 @@ try {
   await page.screenshot({ path: path.join(outDir, "shelf.png") });
   console.log("  screenshot: test-results/shelf.png");
 
+  // -- book progress, not just the first item --------------------------------
+// A bookshelf that only says "you read chapter 1" does not answer the question
+// a reader asks: how much of the book is left?
+await page.evaluate(() => {
+    const store = JSON.parse(localStorage.getItem("serious-dev-store") ?? "{}");
+    // The 全部 list holds two chapters: one finished, one part-read.
+    store.progress = { "https://demo.local/1": 1, "https://demo.local/2": 0.4 };
+    localStorage.setItem("serious-dev-store", JSON.stringify(store));
+  });
+  // The panel is already open; go back and reopen so it re-reads the store.
+  await page.locator(".main-head button", { hasText: "返回" }).click();
+  await page.getByRole("button", { name: /书架/ }).first().click();
+  await page.waitForSelector(".list .row", { timeout: 10000 });
+  const allRow = page.locator(".list .row", { hasText: "全部" }).first();
+  await allRow.waitFor({ timeout: 5000 });
+  const read = (await allRow.locator(".shelf-read").innerText()).trim();
+  assert.ok(read.includes("已读 1 / 2 章"), `book progress wrong: ${read}`);
+  assert.ok(read.includes("另有 1 章读到一半"), `part-read chapter not counted: ${read}`);
+  assert.ok(read.includes("50%"), `percentage wrong: ${read}`);
+  const width = await allRow.locator(".row-progress > div").evaluate((el) => el.style.width);
+  assert.equal(width, "50%", `the bar does not match the numbers (${width})`);
+  console.log(`  book progress: ${read}`);
+
+  // The 玄幻 list has one chapter, unread: zero, and no bar to mislead.
+  const other = (await page.locator(".list .row", { hasText: "玄幻" }).first().locator(".shelf-read").innerText()).trim();
+  assert.ok(other.includes("已读 0 / 1 章"), `an unread list reported progress: ${other}`);
+  console.log(`  an unread list says: ${other}`);
+
+  await page.screenshot({ path: path.join(outDir, "shelf-progress.png") });
+  console.log("  screenshot: test-results/shelf-progress.png");
+
   // -- opening a row ---------------------------------------------------------
   await page.locator(".list .row", { hasText: "玄幻" }).first().click();
   await page.waitForSelector(".banner", { timeout: 5000 });
@@ -126,8 +157,16 @@ try {
   console.log(`  opening a row returns the entry: ${opened}`);
 
   // -- removing --------------------------------------------------------------
-  await page.locator(".main-head button").last().click();
+  // Opening a row returned to the list, so the shelf button is there again.
+  await page.getByRole("button", { name: /书架/ }).first().click();
   await page.waitForSelector(".list .row", { timeout: 10000 });
+  const before = (await page.locator(".list .row-title").allInnerTexts()).map((t) => t.trim());
+  assert.equal(before.length, 2, `expected two rows to remove from, got ${before.length}`);
+
+  // Remove whichever row is first, and check that exactly that one went — not
+  // that "the other one is left", which passes just as well if the wrong button
+  // was pressed.
+  const doomed = before[0];
   await page.locator('.list .row button[aria-label^="从书架移除"]').first().click();
   await page.waitForFunction(
     () => document.querySelectorAll(".list .row").length === 1,
@@ -136,8 +175,8 @@ try {
   );
   const left = (await page.locator(".list .row-title").allInnerTexts()).map((t) => t.trim());
   assert.equal(left.length, 1, `removing left ${left.length} rows`);
-  assert.ok(!left[0].includes("玄幻"), `the wrong row was removed: ${left[0]}`);
-  console.log(`  removing one row left: ${left[0]}`);
+  assert.ok(!left[0].includes(doomed.split("·").pop().trim()), `the wrong row was removed (${left[0]})`);
+  console.log(`  removed "${doomed}"; "${left[0]}" is still there`);
 } catch (error) {
   failed = true;
   console.error("shelf test failed:", error.message);

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, errorMessage, type ShelfEntry } from "../api";
+import { api, errorMessage, type ShelfProgress } from "../api";
 import { Banner, Empty, Spinner, timeAgo } from "./ui";
 
 export function ShelfPanel({
@@ -7,38 +7,25 @@ export function ShelfPanel({
   onClose,
 }: {
   /** Open an entry: switch to its source, then open the stored item. */
-  onOpen: (entry: ShelfEntry) => void;
+  onOpen: (entry: ShelfProgress["entry"]) => void;
   onClose: () => void;
 }) {
-  const [items, setItems] = useState<ShelfEntry[] | null>(null);
+  const [items, setItems] = useState<ShelfProgress[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  /** Reading position per entry, keyed by the entry's stored url. */
-  const [at, setAt] = useState<Record<string, number>>({});
 
   const load = () => {
     setItems(null);
     api
-      .listShelf()
-      .then((list) => {
-        // Newest first, matching the backend's order. Sorted here too so the
-        // panel is correct even if the backend ever stops guaranteeing it.
-        setItems([...list].sort((a, b) => b.added_at - a.added_at));
-        // One round trip for the whole shelf; asking per row would be N calls.
-        if (list.length > 0) {
-          api
-            .getProgressMany(list.map((e) => e.url))
-            .then(setAt)
-            .catch(() => setAt({}));
-        }
-      })
+      .shelfProgress()
+      .then((list) => setItems(list))
       .catch((e) => setError(errorMessage(e)));
   };
 
   useEffect(load, []);
 
-  const remove = async (entry: ShelfEntry) => {
+  const remove = async (id: string) => {
     try {
-      await api.removeShelf(entry.id);
+      await api.removeShelf(id);
       load();
     } catch (e) {
       setError(errorMessage(e));
@@ -67,8 +54,10 @@ export function ShelfPanel({
           />
         ) : (
           <div className="list">
-            {items.map((entry) => {
-              const ratio = at[entry.url] ?? 0;
+            {items.map((p) => {
+              const entry = p.entry;
+              const known = p.total !== null && p.total > 0;
+              const pct = known ? Math.round((p.finished / (p.total as number)) * 100) : 0;
               return (
                 <div className="row" key={entry.id} onClick={() => onOpen(entry)}>
                   <div className="row-main">
@@ -78,10 +67,22 @@ export function ShelfPanel({
                       {entry.category && entry.category !== "全部" && ` · ${entry.category}`}
                       {` · ${timeAgo(entry.added_at)}`}
                     </div>
-                    {ratio > 0 && ratio < 0.98 && (
-                      <div className="row-progress" title={`已读 ${Math.round(ratio * 100)}%`}>
-                        <div style={{ width: `${Math.round(ratio * 100)}%` }} />
-                      </div>
+                    {known ? (
+                      <>
+                        <div
+                          className="row-progress"
+                          title={`读完 ${p.finished} / ${p.total} 章${p.note ? ` · ${p.note}` : ""}`}
+                        >
+                          <div style={{ width: `${pct}%` }} />
+                        </div>
+                        <div className="shelf-read">
+                          已读 {p.finished} / {p.total} 章 · {pct}%
+                          {p.partial > 0 && ` · 另有 ${p.partial} 章读到一半`}
+                          {p.note && ` · ${p.note}`}
+                        </div>
+                      </>
+                    ) : (
+                      <div className="shelf-read shelf-read-unknown">{p.note}</div>
                     )}
                   </div>
                   <button
@@ -90,7 +91,7 @@ export function ShelfPanel({
                     aria-label={`从书架移除 ${entry.title}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      void remove(entry);
+                      void remove(entry.id);
                     }}
                   >
                     ✕

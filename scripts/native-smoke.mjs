@@ -852,6 +852,51 @@ try {
       );
       console.log("  removing a shelf row persisted through the backend");
 
+      // -- Book progress -------------------------------------------------------
+      // This one reaches the network: it re-reads each shelved list to count
+      // chapters, so only the packaged app against a real site proves it.
+      const withProgress = await page.evaluate(
+        () => window.__TAURI_INTERNALS__.invoke("shelf_progress"),
+      );
+      assert.equal(withProgress.length, 0, "the shelf should be empty again before this leg");
+      console.log("  an empty shelf reports no progress rows (and costs no requests)");
+
+      // Put one back and check the numbers are real.
+      // `ids` from the media block is out of scope here, so ask for it again.
+      const musicId = await page.evaluate(async () => {
+        const all = await window.__TAURI_INTERNALS__.invoke("list_sources", { filter: null });
+        return all.find((s) => s.name === "音乐夹具")?.id ?? "";
+      });
+      assert.ok(musicId, "the music fixture source is missing");
+      await page.evaluate(async ([base, sourceId]) => {
+        await window.__TAURI_INTERNALS__.invoke("add_shelf", {
+          entry: {
+            id: "fixture::music",
+            source_id: sourceId,
+            source_name: "音乐夹具",
+            category: "首页",
+            title: "音乐夹具 · 首页",
+            url: `${base}/music.html`,
+            kind: "music",
+            added_at: 0,
+          },
+        });
+      }, [fixtureBase, musicId]);
+      const counted = await page.evaluate(
+        () => window.__TAURI_INTERNALS__.invoke("shelf_progress"),
+      );
+      assert.equal(counted.length, 1, `shelf_progress returned ${counted.length} rows`);
+      const row = counted[0];
+      assert.ok(row.total !== null, `the list was not read: ${row.note}`);
+      assert.ok(row.total > 0, "the fixture list has no items");
+      assert.equal(row.finished, 0, "nothing has been read yet");
+      console.log(
+        `  counted ${row.total} chapters over the network, 0 read${row.note ? ` · ${row.note}` : ""}`,
+      );
+
+      await page.evaluate(() => window.__TAURI_INTERNALS__.invoke("remove_shelf", { id: "fixture::music" }));
+      console.log("  cleaned up the probe entry");
+
       // -- Highlights ---------------------------------------------------------
       // The selection handling itself is DOM work and is covered by
       // scripts/highlight-test.mjs in a real browser. What is left is the part

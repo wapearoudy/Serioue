@@ -70,6 +70,7 @@ pub fn run() {
             commands::list_shelf,
             commands::add_shelf,
             commands::remove_shelf,
+            commands::shelf_progress,
             commands::list_highlights,
             commands::highlights_for,
             commands::add_highlight,

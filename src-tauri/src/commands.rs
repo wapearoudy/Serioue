@@ -628,6 +628,138 @@ pub async fn remove_highlight(state: State<'_, AppState>, id: String) -> AppResu
     state.store.remove_highlight(&id)
 }
 
+/// How far through one shelved list the reader has got.
+#[derive(Debug, Clone, Serialize)]
+pub struct ShelfProgress {
+    pub entry: crate::store::ShelfEntry,
+    /// Chapters seen on the first page of the list.
+    pub total: Option<usize>,
+    pub finished: usize,
+    /// Chapters started but not finished.
+    pub partial: usize,
+    /// Why the numbers are missing, in words fit for a tooltip.
+    pub note: String,
+}
+
+/// Reading progress for every shelved list.
+///
+/// A bookshelf that only reports "you read the first chapter" is not a
+/// bookshelf: the question a reader actually asks is how much is left. This
+/// costs a listing request per entry, so it runs on a small pool, and each
+/// failure is reported against its own entry — one dead source must not empty
+/// the shelf.
+#[tauri::command]
+pub async fn shelf_progress(state: State<'_, AppState>) -> AppResult<Vec<ShelfProgress>> {
+    let store = state.store.clone();
+    blocking(move || {
+        let entries = store.shelf();
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Bounded so a shelf of twenty sources does not open twenty sockets at
+        // once; four hides the latency without looking abusive.
+        let workers = 4usize.min(entries.len());
+        let queue = std::sync::Arc::new(std::sync::Mutex::new(entries.into_iter()));
+        let results: std::sync::Arc<std::sync::Mutex<Vec<ShelfProgress>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let queue = std::sync::Arc::clone(&queue);
+                let results = std::sync::Arc::clone(&results);
+                let store = store.clone();
+                scope.spawn(move || loop {
+                    let entry = {
+                        let Ok(mut q) = queue.lock() else { return };
+                        match q.next() {
+                            Some(e) => e,
+                            None => return,
+                        }
+                    };
+                    let computed = shelf_progress_for(&store, entry);
+                    if let Ok(mut r) = results.lock() {
+                        r.push(computed);
+                    }
+                });
+            }
+        });
+
+        let mut out = results.lock().map(|r| r.clone()).unwrap_or_default();
+        // Newest first, matching the shelf's own order.
+        out.sort_by(|a, b| b.entry.added_at.cmp(&a.entry.added_at));
+        Ok(out)
+    })
+    .await
+}
+
+fn shelf_progress_for(
+    store: &crate::store::Store,
+    entry: crate::store::ShelfEntry,
+) -> ShelfProgress {
+    // Takes a reference: the entry is also needed for the successful paths.
+    let unknown = |note: &str| ShelfProgress {
+        entry: entry.clone(),
+        total: None,
+        finished: 0,
+        partial: 0,
+        note: note.to_string(),
+    };
+
+    let Some(stored) = store.source(&entry.source_id) else {
+        return unknown("源已不在本地");
+    };
+
+    let categories = browse::categories(&stored.source);
+    let url = categories
+        .iter()
+        .find(|c| c.name == entry.category)
+        .map(|c| c.url.clone())
+        .unwrap_or_default();
+
+    let req = PageRequest {
+        url_template: url,
+        page: 1,
+        next_url: None,
+    };
+    let page = match browse::load_page(&stored.source, &req) {
+        Ok(p) => p,
+        Err(e) => return unknown(&format!("读取列表失败：{e}")),
+    };
+
+    let total = page.items.len();
+    if total == 0 {
+        return ShelfProgress {
+            entry,
+            total: Some(0),
+            finished: 0,
+            partial: 0,
+            note: "列表为空".into(),
+        };
+    }
+
+    // Finished counts as read; the 2%-98% window is the same one the sidebar's
+    // 继续阅读 uses, so the two never disagree about a chapter.
+    let (finished, partial) = page.items.iter().fold((0usize, 0usize), |(f, p), item| {
+        match store.progress(&item.link) {
+            Some(r) if r >= 0.98 => (f + 1, p),
+            Some(r) if r > 0.02 => (f, p + 1),
+            _ => (f, p),
+        }
+    });
+
+    // A paginated list would understate "total", so say so rather than imply
+    // the whole book was counted.
+    let note = if page.next.is_some() { "只统计了第一页" } else { "" };
+    ShelfProgress {
+        entry,
+        total: Some(total),
+        finished,
+        partial,
+        note: note.into(),
+    }
+}
+
 #[tauri::command]
 pub async fn list_history(state: State<'_, AppState>, limit: Option<usize>) -> AppResult<Vec<HistoryEntry>> {
     let store = state.store.clone();

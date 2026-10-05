@@ -118,6 +118,34 @@ const HANDLERS: Record<string, Handler> = {
     writeStore({ ...readStore(), settings: args.settings });
   },
   list_shelf: () => readStore().shelf ?? [],
+  shelf_progress: () => {
+    // Same shape as the backend: chapters counted against saved positions.
+    const store = readStore();
+    const shelf = ((store.shelf ?? []) as Array<Record<string, unknown>>).slice();
+    const progress = (store.progress ?? {}) as Record<string, number>;
+    const lists: Record<string, string[]> = {
+      全部: ["https://demo.local/1", "https://demo.local/2"],
+      玄幻: ["https://demo.local/y1"],
+      都市: ["https://demo.local/d1"],
+    };
+    return shelf.map((entry) => {
+      const links = lists[String(entry.category)] ?? [];
+      let finished = 0;
+      let partial = 0;
+      for (const link of links) {
+        const at = progress[link] ?? 0;
+        if (at >= 0.98) finished++;
+        else if (at > 0.02) partial++;
+      }
+      return {
+        entry,
+        total: links.length,
+        finished,
+        partial,
+        note: "",
+      };
+    });
+  },
   add_shelf: (args) => {
     const store = readStore();
     const shelf = ((store.shelf ?? []) as Array<Record<string, unknown>>).slice();

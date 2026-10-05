@@ -95,6 +95,17 @@ export interface RepoCollection {
   json_url: string;
 }
 
+/** One shelved list, with how far through it the reader has got. */
+export interface ShelfProgress {
+  entry: ShelfEntry;
+  /** Chapters counted on the first page; `null` when the list could not be read. */
+  total: number | null;
+  finished: number;
+  partial: number;
+  /** Why the numbers are missing, or a caveat about them. */
+  note: string;
+}
+
 export interface Highlight {
   id: string;
   url: string;
@@ -299,6 +310,9 @@ export const api = {
   addShelf: (entry: ShelfEntry) => invoke<ShelfEntry>("add_shelf", { entry }),
 
   removeShelf: (id: string) => invoke<void>("remove_shelf", { id }),
+
+  /** How far through each shelved list the reader has got. */
+  shelfProgress: () => invoke<ShelfProgress[]>("shelf_progress"),
 
   listHighlights: () => invoke<Highlight[]>("list_highlights"),
 
