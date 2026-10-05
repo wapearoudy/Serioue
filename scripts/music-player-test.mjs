@@ -106,6 +106,34 @@ try {
   assert.ok(Math.abs(vol - 0.35) < 0.01, `volume not applied to the element (${vol})`);
   console.log(`  volume slider set the element to ${vol}`);
 
+  // -- queue management ------------------------------------------------------
+  const before = await page.locator(".music-queue li").count();
+  // Removing must not also trigger the row's own "play this" handler.
+  await page.locator(".music-queue li").nth(1).hover();
+  await page.locator(".music-queue li").nth(1).locator(".remove").click();
+  await page.waitForFunction(
+    (n) => document.querySelectorAll(".music-queue li").length === n - 1,
+    before,
+    { timeout: 5000 },
+  );
+  const after = await page.locator(".music-queue li").count();
+  console.log(`  removing a track took the queue from ${before} to ${after}`);
+
+  // Clearing empties it and stops playback.
+  await page.locator(".music-queue-head button", { hasText: "清空" }).click();
+  await page.waitForFunction(() => document.querySelectorAll(".music-queue li").length === 0, null, {
+    timeout: 5000,
+  });
+  const paused = await page.evaluate(() => document.querySelector(".music audio").paused);
+  assert.ok(paused, "clearing the queue left playback running");
+  const restore = page.locator(".music-queue-head button", { hasText: "恢复全部" });
+  assert.equal(await restore.count(), 1, "there is no way back from an empty queue");
+  await restore.click();
+  await page.waitForFunction(() => document.querySelectorAll(".music-queue li").length === 3, null, {
+    timeout: 5000,
+  });
+  console.log("  clearing stops playback, and restoring brings the queue back");
+
   await page.screenshot({ path: path.join(outDir, "music-player.png") });
   console.log("  screenshot: test-results/music-player.png");
 } catch (error) {

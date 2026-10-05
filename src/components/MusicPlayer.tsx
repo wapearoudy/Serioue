@@ -67,8 +67,45 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
   const [repeat, setRepeat] = useState<Repeat>("off");
   const [error, setError] = useState<string | null>(null);
 
-  const total = tracks.length;
-  const track = tracks[index];
+  /**
+   * The queue is local state, not the prop, because a listener has to be able
+   * to take a track out of it. Re-seeded whenever the page supplies a new list.
+   */
+  const [queue, setQueue] = useState<Track[]>(tracks);
+  useEffect(() => {
+    setQueue(tracks);
+    setIndex((i) => Math.min(i, Math.max(0, tracks.length - 1)));
+  }, [tracks]);
+
+  const total = queue.length;
+  const track = queue[index];
+
+  /** Take a track out, keeping the current one playing if it is not this one. */
+  const removeTrack = useCallback((at: number) => {
+    setQueue((prev) => prev.filter((_, i) => i !== at));
+    setIndex((cur) => {
+      if (at > cur) return cur;
+      if (at < cur) return cur - 1;
+      return 0;
+    });
+  }, []);
+
+  const clearQueue = useCallback(() => {
+    setQueue([]);
+    setIndex(0);
+    setWantPlay(false);
+    const el = audio.current;
+    if (el) {
+      el.pause();
+      el.removeAttribute("src");
+    }
+  }, []);
+
+  /** Put the page's whole list back after a clear. */
+  const restoreQueue = useCallback(() => {
+    setQueue(tracks);
+    setIndex(0);
+  }, [tracks]);
 
   // A queue exhausted by shuffle or by the end of the list must not dead-end.
   // Shuffle picks a random track directly in `step`, so no extra ordering is
@@ -203,7 +240,10 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
     return () => window.removeEventListener("keydown", onKey);
   }, [toggle, next, prev, seek, duration, position]);
 
-  if (total === 0) return null;
+  // Nothing on the page to play at all — render nothing. An emptied queue is a
+  // different case: the player stays, offering to put the list back, because a
+  // clear that leaves no way back is a trap.
+  if (tracks.length === 0) return null;
 
   const pct = duration > 0 ? (position / duration) * 100 : 0;
 
@@ -298,9 +338,31 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
 
       {error && <div className="music-error">{error}</div>}
 
-      {total > 1 && (
+      {total > 0 && (
+        <div className="music-queue-head">
+          <span>播放队列 · {total} 首</span>
+          <span className="spacer" />
+          {total > 1 && (
+            <button className="ghost" onClick={clearQueue} title="清空队列">
+              清空
+            </button>
+          )}
+        </div>
+      )}
+
+      {total === 0 && (
+        <div className="music-queue-head">
+          <span>播放队列已空</span>
+          <span className="spacer" />
+          <button className="ghost" onClick={restoreQueue}>
+            恢复全部 {tracks.length} 首
+          </button>
+        </div>
+      )}
+
+      {total > 0 && (
         <ol className="music-queue">
-          {tracks.map((t, i) => (
+          {queue.map((t, i) => (
             <li
               key={t.url}
               className={i === index ? "playing" : ""}
@@ -311,6 +373,17 @@ export function MusicPlayer({ tracks, title, startAt = 0, onNextTrack, volume = 
             >
               <span className="n">{i + 1}</span>
               <span className="t">{t.title || t.url.split("/").pop()}</span>
+              <button
+                className="remove"
+                title="从队列中移除"
+                aria-label={`移除 ${t.title || t.url}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeTrack(i);
+                }}
+              >
+                ✕
+              </button>
             </li>
           ))}
         </ol>
