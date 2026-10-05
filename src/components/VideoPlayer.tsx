@@ -148,9 +148,13 @@ function useAutoplayPrompt(
  * only printed "use VLC". hls.js feeds the same `<video>` element through
  * Media Source Extensions, so one element serves both paths.
  *
- * Native controls are kept for transport (play, seek, volume) because they
- * are accessible and behave correctly; the extras a streaming site needs —
- * quality, speed, fullscreen — sit in an overlay.
+ * Native controls are **not** used. Chromium's control bar takes over the
+ * gestures a video site needs: a single click anywhere on the picture toggles
+ * playback, and a double click puts the `<video>` element itself into
+ * fullscreen instead of the player wrapper — and `preventDefault()` cannot stop
+ * either. Since this player owns its transport (play, seek, volume) and its
+ * extras (quality, speed, picture-in-picture, fullscreen), a single click can be
+ * left alone and a double click can target the wrapper.
  */
 export function VideoPlayer({
   src,

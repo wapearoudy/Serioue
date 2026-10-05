@@ -18,6 +18,9 @@ serious-updater.key
 .DS_Store
 Thumbs.db
 
+# Agent team state (plans, task board) — machine-local, not source.
+.agent-teams/
+
 # Native smoke-test artifacts
 test-results/
 
