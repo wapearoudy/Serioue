@@ -45,6 +45,8 @@ export function Reader({
 }: Props) {
   const [mode, setMode] = useState<"auto" | "text" | "rich">("auto");
   const [tocOpen, setTocOpen] = useState(false);
+  /** Which chapters have been read, so the contents can mark them. */
+  const [readChapters, setReadChapters] = useState<Record<string, number>>({});
   const body = useRef<HTMLDivElement>(null);
   const [progress, setProgress] = useState(0);
   const restored = useRef<string | null>(null);
@@ -57,6 +59,24 @@ export function Reader({
   }, [siblings, currentLink]);
   const prevChapter = position > 0 ? siblings[position - 1] : null;
   const nextChapter = position >= 0 && position < siblings.length - 1 ? siblings[position + 1] : null;
+
+  // Fetch the whole list's reading positions when the contents opens, so a
+  // reader can see at a glance what is left.
+  useEffect(() => {
+    if (!tocOpen || siblings.length < 2) return;
+    let cancelled = false;
+    api
+      .getProgressMany(siblings.map((s) => s.link))
+      .then((map) => {
+        if (!cancelled) setReadChapters(map);
+      })
+      .catch(() => {
+        /* marks are a nicety; failing to load them is not an error */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tocOpen, siblings]);
 
   // Offer the next chapter once the reader reaches the end, the way a book
   // does. Dismissal is remembered per chapter so it does not reappear on every
@@ -263,20 +283,31 @@ export function Reader({
             </button>
           </div>
           <ol className="toc-list">
-            {siblings.map((item, i) => (
-              <li
-                key={`${item.link}-${i}`}
-                className={i === position ? "current" : ""}
-                onClick={() => {
-                  setTocOpen(false);
-                  onOpenSibling?.(item);
-                }}
-              >
-                <span className="toc-n">{i + 1}</span>
-                <span className="toc-t">{item.title || item.link}</span>
-                {item.date && <span className="toc-d">{item.date}</span>}
-              </li>
-            ))}
+            {siblings.map((item, i) => {
+              const at = readChapters[item.link];
+              const finished = at !== undefined && at >= 0.98;
+              const started = at !== undefined && !finished;
+              return (
+                <li
+                  key={`${item.link}-${i}`}
+                  className={i === position ? "current" : ""}
+                  onClick={() => {
+                    setTocOpen(false);
+                    onOpenSibling?.(item);
+                  }}
+                >
+                  <span className="toc-n">{i + 1}</span>
+                  <span className={`toc-t${finished ? " read" : ""}`}>
+                    {finished && <span className="toc-tick" aria-label="已读">✓</span>}
+                    {item.title || item.link}
+                  </span>
+                  {started && !finished && (
+                    <span className="toc-partial" title={`已读 ${Math.round(at * 100)}%`} />
+                  )}
+                  {item.date && <span className="toc-d">{item.date}</span>}
+                </li>
+              );
+            })}
           </ol>
         </div>
       )}

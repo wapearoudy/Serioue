@@ -276,6 +276,10 @@ export const api = {
   saveProgress: (url: string, ratio: number) =>
     invoke<void>("save_progress", { url, ratio }),
 
+  /** Reading positions for a whole chapter list, keyed by URL. */
+  getProgressMany: (urls: string[]) =>
+    invoke<Record<string, number>>("get_progress_many", { urls }),
+
   listCollections: () => invoke<Collection[]>("list_collections"),
 
   removeCollection: (url: string) => invoke<void>("remove_collection", { url }),

@@ -72,6 +72,7 @@ pub fn run() {
             commands::render_html,
             commands::continue_reading,
             commands::get_progress,
+            commands::get_progress_many,
             commands::save_progress,
             commands::list_collections,
             commands::remove_collection,

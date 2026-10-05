@@ -698,6 +698,27 @@ select:focus {
   flex-shrink: 0;
 }
 
+/* A chapter already finished: a tick and dimmed text, so the reader can see
+   what is left without opening them one by one. */
+.toc-t.read {
+  color: var(--text-faint);
+}
+
+.toc-tick {
+  color: var(--ok);
+  margin-right: 5px;
+  font-size: 11px;
+}
+
+/* Started but not finished. */
+.toc-partial {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--warn);
+  flex-shrink: 0;
+}
+
 .chapter-nav {
   display: flex;
   justify-content: space-between;

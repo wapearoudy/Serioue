@@ -597,6 +597,12 @@ try {
     console.log("  (render fallback)");
     const jsResult = await page.evaluate(
       async ([base]) => {
+        // The fallback is opt-in, so the test turns it on rather than
+        // depending on the default.
+        const settings = await window.__TAURI_INTERNALS__.invoke("get_settings");
+        await window.__TAURI_INTERNALS__.invoke("set_settings", {
+          settings: { ...settings, render_js: true },
+        });
         await window.__TAURI_INTERNALS__.invoke("import_from_text", {
           text: JSON.stringify([
             {

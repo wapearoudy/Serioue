@@ -48,6 +48,13 @@ function Preview() {
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
   const [progress, setProgress] = useState(0);
   const [tocOpen, setTocOpen] = useState(false);
+  // Chapter 1 and 2 are marked read, chapter 3 is part-read: the contents has to
+  // show the difference.
+  const [readChapters] = useState<Record<string, number>>({
+    "https://example.com/book/chapter-1": 1,
+    "https://example.com/book/chapter-2": 1,
+    "https://example.com/book/chapter-3": 0.4,
+  });
   const [chapter, setChapter] = useState(2);
   const [offerNext, setOfferNext] = useState(false);
   const declined = useRef<string | null>(null);
@@ -127,7 +134,20 @@ function Preview() {
                     }}
                   >
                     <span className="toc-n">{i + 1}</span>
-                    <span className="toc-t">{c.title}</span>
+                    <span className={`toc-t${readChapters[c.link] >= 0.98 ? " read" : ""}`}>
+                      {readChapters[c.link] >= 0.98 && (
+                        <span className="toc-tick" aria-label="已读">
+                          ✓
+                        </span>
+                      )}
+                      {c.title}
+                    </span>
+                    {readChapters[c.link] !== undefined && readChapters[c.link] < 0.98 && (
+                      <span
+                        className="toc-partial"
+                        title={`已读 ${Math.round(readChapters[c.link] * 100)}%`}
+                      />
+                    )}
                     <span className="toc-d">{c.date}</span>
                   </li>
                 ))}

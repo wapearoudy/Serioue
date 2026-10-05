@@ -586,6 +586,28 @@ pub async fn get_progress(state: State<'_, AppState>, url: String) -> AppResult<
     Ok(state.store.progress(&url).unwrap_or(0.0))
 }
 
+/// Reading positions for several articles at once.
+///
+/// The contents drawer asks for the whole chapter list in one go; one IPC call
+/// per chapter would be silly.
+#[tauri::command]
+pub async fn get_progress_many(
+    state: State<'_, AppState>,
+    urls: Vec<String>,
+) -> AppResult<std::collections::HashMap<String, f32>> {
+    let store = state.store.clone();
+    blocking(move || {
+        let mut out = std::collections::HashMap::with_capacity(urls.len());
+        for url in urls {
+            if let Some(p) = store.progress(&url) {
+                out.insert(url, p);
+            }
+        }
+        Ok(out)
+    })
+    .await
+}
+
 /// Remember a reading position so reopening the article resumes there.
 #[tauri::command]
 pub async fn save_progress(state: State<'_, AppState>, url: String, ratio: f32) -> AppResult<()> {

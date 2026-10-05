@@ -170,6 +170,17 @@ try {
   await page.screenshot({ path: path.join(outDir, "reader-preview.png") });
   console.log("  screenshot: test-results/reader-preview.png");
 
+  // -- read markers in the contents ------------------------------------------
+  // Knowing what is left matters more than knowing where you are.
+  await page.getByRole("button", { name: "目录" }).click();
+  await page.waitForSelector(".toc-list li", { timeout: 5000 });
+  const ticks = await page.locator(".toc-tick").count();
+  const partials = await page.locator(".toc-partial").count();
+  assert.equal(ticks, 2, `expected 2 finished chapters marked, saw ${ticks}`);
+  assert.equal(partials, 1, `expected 1 part-read chapter marked, saw ${partials}`);
+  console.log(`  contents marks ${ticks} finished and ${partials} part-read chapter(s)`);
+  await page.locator(".toc-head button").click();
+
   // -- table of contents ---------------------------------------------------
   await page.locator(".main-head button", { hasText: "目录" }).click();
   await page.waitForSelector(".toc-list", { timeout: 5000 });
