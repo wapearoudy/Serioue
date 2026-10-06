@@ -68,7 +68,58 @@ export function compactNumber(n: number): string {
   return String(n);
 }
 
-/** A short glyph for content that has no thumbnail. */
+/** An inline SVG glyph for content that has no thumbnail.
+ *
+ * Vector, not emoji: 🖼/📖/📄 render from whatever font happens to be
+ * installed, so they change weight, metrics and colour per machine and cannot
+ * follow the theme tokens. These paths use `currentColor` and a single 1.8px
+ * stroke, so they stay crisp and dim with `--text-faint` on every theme.
+ * Music (♪) and video (▶) keep their text glyphs: they are single-codepoint
+ * geometric shapes, not colour emoji, and already inherit the same colour.
+ */
+export function KindIcon({ kind }: { kind: string }) {
+  const common = {
+    width: 22,
+    height: 22,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    "aria-hidden": true,
+  } as const;
+  if (kind === "image")
+    return (
+      <svg {...common}>
+        <rect x="3" y="4" width="18" height="16" rx="2.5" />
+        <circle cx="9" cy="10" r="1.6" />
+        <path d="M4.5 18.5 10 13l3.5 3.5L17 13l2.5 2.5" />
+      </svg>
+    );
+  if (kind === "novel")
+    return (
+      <svg {...common}>
+        <path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H18v15.5H6.5A1.5 1.5 0 0 0 5 20Z" />
+        <path d="M5 19.5A1.5 1.5 0 0 1 6.5 18H18" />
+        <path d="M9 8h6M9 11.5h6" />
+      </svg>
+    );
+  return (
+    <svg {...common}>
+      <path d="M6 3.5h9L19.5 8v12.5h-13.5Z" />
+      <path d="M14.5 3.5V8H19.5" />
+      <path d="M9 12h6M9 15h6" />
+    </svg>
+  );
+}
+
+/** A short glyph for content that has no thumbnail.
+ *
+ * Kept for text-only contexts (aria labels, titles). The three colour-emoji
+ * cases now answer geometric shapes that inherit the surrounding colour;
+ * prefer <KindIcon/> for rendered output.
+ */
 export function kindGlyph(kind: string): string {
   switch (kind) {
     case "music":
@@ -76,11 +127,11 @@ export function kindGlyph(kind: string): string {
     case "video":
       return "▶";
     case "image":
-      return "🖼";
+      return "▦";
     case "novel":
-      return "📖";
+      return "▤";
     default:
-      return "📄";
+      return "▧";
   }
 }
 

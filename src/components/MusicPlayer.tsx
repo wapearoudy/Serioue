@@ -1239,7 +1239,21 @@ export function MusicPlayer({
           <img className="music-cover" src={track.cover} alt="" />
         ) : (
           <div className="music-cover placeholder" aria-hidden="true">
-            ♪
+            <svg
+              width="30"
+              height="30"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M9 18V6l10-2v11" />
+              <circle cx="6.5" cy="18" r="2.5" />
+              <circle cx="16.5" cy="15" r="2.5" />
+            </svg>
           </div>
         )}
         <div className="music-meta">
@@ -1517,7 +1531,7 @@ export function MusicPlayer({
               onClick={() => seek(line.time)}
               title={formatTime(line.time)}
             >
-              {line.text || "♪"}
+              {line.text || "—"}
             </button>
           ))}
         </div>

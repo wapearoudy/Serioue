@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorMessage, type ArticleItem, type Category } from "../api";
-import { Banner, Empty, Spinner, kindGlyph, kindLabel } from "./ui";
+import { Banner, Empty, KindIcon, Spinner, kindLabel } from "./ui";
 import { useKeyboardRows } from "./keyboardRow";
 import "./article-list.css";
 
@@ -577,7 +577,7 @@ export function ArticleList({
                         item.image ? { backgroundImage: `url("${CSS.escape(item.image)}")` } : undefined
                       }
                     >
-                      {!item.image && kindGlyph(item.kind)}
+                      {!item.image && <KindIcon kind={item.kind} />}
                     </div>
                     <div className="card-body">
                       <div className="card-title">{item.title}</div>

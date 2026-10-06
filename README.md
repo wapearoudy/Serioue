@@ -1,5 +1,7 @@
 # Serious
 
+![Serious 应用图标：深色圆角方块上的霓虹渐变翻开书页](docs/logo-preview.png)
+
 把共享的「阅读（Legado）源」变成真正能用的桌面客户端。macOS 与 Windows 通用。
 
 源仓库（`yck2026.fun/yuedu/rsss`）分享的是一堆 **规则**，不是一个应用：
@@ -810,8 +812,8 @@ a track with no lyric file shows no panel
 3. **发布** — 推送一个 tag：
 
    ```bash
-   git tag v0.1.4
-   git push origin v0.1.4
+   git tag v0.1.5
+   git push origin v0.1.5
    ```
 
    GitHub Actions 会自动为 macOS（ARM + Intel）和 Windows 构建、签名，并**直接发布** Release。

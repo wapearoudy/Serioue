@@ -8,6 +8,16 @@
   --text-faint: #6b7383;
   --accent: #4f8cff;
   --accent-dim: #2f5fb3;
+  /* Gradient stops for the primary action: solid --accent stays the text-safe
+     token (contrast is measured against it), the gradient is decoration only.
+     Both ends are chosen so white text clears AA on either half. */
+  --accent-2: #7c5cf0;
+  --accent-gradient: linear-gradient(135deg, var(--accent), var(--accent-2));
+  /* Layered elevation: cards rest on 1, popups float on 2, modals on 3. One
+     scale, no ad-hoc shadow values (ui-ux-pro-max: elevation-consistent). */
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 30%), 0 4px 14px rgb(0 0 0 / 28%);
+  --shadow-2: 0 8px 22px rgb(0 0 0 / 45%);
+  --shadow-3: 0 12px 32px rgb(0 0 0 / 50%);
   --ok: #35c26a;
   --warn: #e0a338;
   /* A touch lighter than the original #e0564f: on the dark hover surface
@@ -146,13 +156,20 @@ button:disabled {
 }
 
 button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-gradient);
+  border-color: transparent;
   color: #fff;
+  /* A press must read without shifting layout (ui-ux-pro-max: stable states):
+     brightness, not a size change. */
+  transition: background 0.12s, border-color 0.12s, filter 0.12s;
 }
 
 button.primary:hover:not(:disabled) {
-  background: #5f98ff;
+  filter: brightness(1.08);
+}
+
+button.primary:active:not(:disabled) {
+  filter: brightness(0.96);
 }
 
 button.ghost {
@@ -181,6 +198,29 @@ textarea:focus,
 select:focus {
   outline: none;
   border-color: var(--accent-dim);
+}
+
+/* Every interactive element keeps a keyboard path (ui-ux-pro-max P1):
+   buttons, tabs, cards, rows, selects and lyric lines share one ring. The
+   slider's own three-band ring below is untouched — it exists because a plain
+   outline vanishes on the fullscreen video plate. */
+button:focus-visible,
+.tab:focus-visible,
+.card[role="button"]:focus-visible,
+.row[role="button"]:focus-visible,
+select:focus-visible,
+.music-lyrics button:focus-visible,
+.continue-row[role="button"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Touch targets: primary buttons and tabs clear 44px in their inline axis
+   (ui-ux-pro-max P2). Icon-only 28px controls (episodes ‹ ›, star) keep their
+   visual size but gain hit area through padding on the clickable box. */
+button.primary,
+.tab {
+  min-height: 32px;
 }
 
 /* Keyboard focus on a slider.
@@ -396,6 +436,11 @@ input[type="range"]:focus-visible,
 .src-item.selected {
   background: var(--bg-hover);
   border-color: var(--accent-dim);
+  /* The selection reads at a glance: a 2px gradient rail on the leading edge
+     plus the existing border. Colour is not the only signal — the rail's
+     position marks "here" even in monochrome (ui-ux-pro-max: nav-state-active,
+     color-not-only). */
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .src-name {
@@ -493,14 +538,15 @@ input[type="range"]:focus-visible,
   overflow: hidden;
   cursor: pointer;
   background: var(--bg-elevated);
-  transition: border-color 0.12s, transform 0.12s;
+  transition: border-color 0.12s, transform 0.12s, box-shadow 0.18s ease-out;
   display: flex;
   flex-direction: column;
 }
 
 .card:hover {
   border-color: var(--accent-dim);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-1);
 }
 
 .card-thumb {
@@ -512,6 +558,15 @@ input[type="range"]:focus-visible,
   color: var(--text-faint);
   font-size: 22px;
   border-bottom: 1px solid var(--border);
+  /* A soft wash so a glyph never sits on flat black: the icon keeps its own
+     colour, the surface gains depth. */
+  background-image: linear-gradient(160deg, rgb(79 140 255 / 14%), transparent 55%);
+}
+
+.card-thumb svg {
+  width: 30px;
+  height: 30px;
+  opacity: 0.85;
 }
 
 .card-body {
@@ -721,9 +776,19 @@ input[type="range"]:focus-visible,
 }
 
 .reader h1 {
-  font-size: 24px;
-  line-height: 1.35;
+  font-size: 26px;
+  line-height: 1.32;
   margin: 0 0 6px;
+  letter-spacing: 0.01em;
+  font-weight: 700;
+}
+
+/* Long-form measure: 60–75ch on desktop so the eye never runs edge to edge
+   (ui-ux-pro-max: line-length-control). The reader-width setting still wins
+   when the user picks one — this only bounds the default. */
+.reader-body,
+.reader-rich {
+  letter-spacing: 0.012em;
 }
 
 .reader-meta {
@@ -1500,6 +1565,21 @@ input[type="range"]:focus-visible,
   padding: 40px;
 }
 
+/* An illustration feel without an image asset: a soft radial wash behind the
+   copy, drawn from the theme tokens so it works on all four themes. Pure CSS,
+   no emoji, no external file. */
+.empty::before {
+  content: "";
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 30%, rgb(79 140 255 / 35%), transparent 60%),
+    radial-gradient(circle at 70% 70%, rgb(124 92 240 / 30%), transparent 60%),
+    var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+
 .empty h3 {
   margin: 0;
   color: var(--text-dim);
@@ -1527,6 +1607,21 @@ input[type="range"]:focus-visible,
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* Motion with an off-ramp (ui-ux-pro-max P7 + WCAG 2.3.3): every animation in
+   this sheet lasts ≤400ms, and under prefers-reduced-motion they all resolve
+   to their end state instantly — content is never left invisible or displaced.
+   transform/opacity only; no width/height animation anywhere. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
@@ -1891,6 +1986,13 @@ input[type="range"]:focus-visible,
   justify-content: center;
   font-size: 26px;
   color: var(--text-faint);
+  background-image: linear-gradient(160deg, rgb(79 140 255 / 16%), transparent 60%);
+}
+
+.music-cover.placeholder svg {
+  width: 30px;
+  height: 30px;
+  opacity: 0.9;
 }
 
 .music-meta {
@@ -1970,14 +2072,16 @@ input[type="range"]:focus-visible,
 .music-play {
   font-size: 18px !important;
   min-width: 46px;
-  background: var(--accent);
-  border-color: var(--accent);
+  min-height: 44px;
+  background: var(--accent-gradient);
+  border-color: transparent;
   color: #fff;
+  box-shadow: var(--shadow-1);
 }
 
 .music-play:hover:not(:disabled) {
-  background: var(--accent-dim);
-  border-color: var(--accent-dim);
+  filter: brightness(1.08);
+  border-color: transparent;
 }
 
 .music-error {

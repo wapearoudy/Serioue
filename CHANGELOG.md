@@ -2,6 +2,29 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.1.5 — 图标 + UI 焕新版
+
+自 v0.1.4 以来的变化（图标 t60 + UI 升级 t61，发版门禁 t62 四项全绿）。
+
+### 焕新
+
+- **炫酷新图标**（t60）—— 深色圆角方块 + 霓虹渐变翻开书页（cyan→violet→magenta），
+  亮暗底都清晰。生成脚本 `scripts/make-logo.mjs`（python3 + Pillow，单源真值）；
+  导出 `icon.png`（512）/ 32×32 / 64×64 / 128×128 / 128×128@2x / `icon.ico`（多尺寸）；
+  `icon.icns` 保留旧文件（本机无 icns 工具链）。README 顶部挂 64px 预览（`docs/logo-preview.png`）。
+- **UI 整体升级**（t61）—— 深色优先设计系统：`KindIcon` SVG 替换列表 emoji 图标；
+  音乐封面占位换 SVG 音符、空歌词提示改破折号；accent 渐变 token + 阴影层级、
+  主按钮/播放键渐变、卡片悬浮、侧栏选中 rail、阅读标题字距、共享 focus ring、
+  Empty 插画 wash，并尊重 `reduced-motion`。
+
+### 门禁
+
+- `cargo test --release` EXIT=0：lib 209 + `legado_dom` 9（1 ignored）+ `t44_bclass` 9（3 ignored），
+  其余 19 按设计 ignored，0 failed（`test-results/gate-015-cargo.log`）。
+- `cargo clippy --release --all-targets -- -D warnings` EXIT=0 零告警。
+- `npx tsc --noEmit` EXIT=0；`pnpm check:updater` EXIT=0（endpoint 为 GitHub release feed）。
+- `theme-contrast` / `focus-visible` EXIT=0（t61 对比度与焦点腿全绿）。
+
 ## 0.1.4 — 离线可读，规则引擎补齐
 
 自 v0.1.3 以来的变化（`v0.1.3..main` 共 22 个提交，发版门禁 t59 四项全绿）。
