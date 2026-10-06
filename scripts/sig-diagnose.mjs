@@ -16,8 +16,12 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const bundle = path.join(root, "src-tauri", "target", "release", "bundle", "nsis");
+// The separator before "setup" is a hyphen in the real artefact
+// (`Serious_0.1.3_x64-setup.exe`), so both spellings are accepted; matching only
+// the underscore form finds nothing and reports a perfectly good release as
+// having no installer at all.
 const candidates = (await readdir(bundle).catch(() => [])).filter(
-  (name) => /^Serious_.*_setup\.exe$/.test(name),
+  (name) => /^Serious_.*[-_]setup\.exe$/i.test(name),
 );
 if (candidates.length === 0) {
   console.error(
@@ -27,7 +31,10 @@ if (candidates.length === 0) {
   process.exit(1);
 }
 if (candidates.length > 1) {
-  console.log(`several installers present, using the newest: ${candidates.join(", ")}`);
+  // Sorted as text, not as versions: this is a diagnostic, it says which file it
+  // chose, and "0.1.9" > "0.1.10" lexically. Guessing a version order here would
+  // be the exact kind of quiet wrongness this script exists to catch.
+  console.log(`several installers present (${candidates.sort().join(", ")})`);
 }
 const installer = path.join(bundle, candidates.sort().at(-1));
 const sigFile = `${installer}.sig`;
