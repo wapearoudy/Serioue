@@ -139,7 +139,11 @@ try {
   });
   const beforeRight = await state();
   await press("ArrowRight");
-  await page.waitForTimeout(120);
+  await page.waitForFunction(
+    (from) => Math.abs(document.querySelector(".player-wrap video").currentTime - (from + 10)) < 0.6,
+    beforeRight.currentTime,
+    { timeout: 3000 },
+  );
   const afterRight = await state();
   console.log(
     `  →:    currentTime ${beforeRight.currentTime.toFixed(2)} → ${afterRight.currentTime.toFixed(2)}, ` +
@@ -152,7 +156,11 @@ try {
 
   // Pressing again is relative to the *new* position, so it walks back 10.
   await press("ArrowLeft");
-  await page.waitForTimeout(120);
+  await page.waitForFunction(
+    (from) => Math.abs(document.querySelector(".player-wrap video").currentTime - (from - 10)) < 0.6,
+    afterRight.currentTime,
+    { timeout: 3000 },
+  );
   const afterLeft = await state();
   console.log(`  ←:    currentTime ${afterRight.currentTime.toFixed(2)} → ${afterLeft.currentTime.toFixed(2)}`);
   assert.ok(
@@ -187,13 +195,21 @@ try {
     document.querySelector(".player-wrap video").volume = 0.5;
   });
   const beforeUp = await state();
+  // Wait for the element to *reach* the value rather than sleeping and reading:
+  // a shortcut that did nothing has to fail here, not pass on a slow machine.
+  const waitVolume = (want) =>
+    page.waitForFunction(
+      (w) => Math.abs(document.querySelector(".player-wrap video").volume - w) < 0.005,
+      want,
+      { timeout: 3000 },
+    );
   await press("ArrowUp");
-  await page.waitForTimeout(80);
+  await waitVolume(beforeUp.volume + 0.05);
   const afterUp = await state();
   await press("ArrowDown");
-  await page.waitForTimeout(80);
+  await waitVolume(beforeUp.volume);
   await press("ArrowDown");
-  await page.waitForTimeout(80);
+  await waitVolume(beforeUp.volume - 0.05);
   const afterDown = await state();
   console.log(
     `  ↑:    volume ${beforeUp.volume.toFixed(2)} → ${afterUp.volume.toFixed(2)}; ` +
@@ -205,10 +221,18 @@ try {
   // -- m: mute -------------------------------------------------------------------
   const beforeM = await state();
   await press("m");
-  await page.waitForTimeout(80);
+  await page.waitForFunction(
+    () => document.querySelector(".player-wrap video").muted === true,
+    null,
+    { timeout: 3000 },
+  );
   const afterM = await state();
   await press("m");
-  await page.waitForTimeout(80);
+  await page.waitForFunction(
+    () => document.querySelector(".player-wrap video").muted === false,
+    null,
+    { timeout: 3000 },
+  );
   const afterM2 = await state();
   console.log(`  m:    muted ${beforeM.muted} → ${afterM.muted} → ${afterM2.muted}, said "${await announcement()}"`);
   assert.equal(afterM.muted, true, "m did not mute");
@@ -216,7 +240,14 @@ try {
 
   // -- digits: jump to 0%–90% ------------------------------------------------------
   await press("5");
-  await page.waitForTimeout(150);
+  await page.waitForFunction(
+    () => {
+      const v = document.querySelector(".player-wrap video");
+      return Math.abs(v.currentTime / v.duration - 0.5) < 0.02;
+    },
+    null,
+    { timeout: 3000 },
+  );
   const at50 = await state();
   console.log(`  5:    currentTime → ${at50.currentTime.toFixed(2)} of 12.1s, said "${await announcement()}"`);
   assert.ok(

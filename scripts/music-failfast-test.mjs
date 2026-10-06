@@ -100,19 +100,36 @@ const browser = await chromium.launch({
 const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
 let failed = false;
 
+// Clear the player's stores before the application ever runs. The opt-in query
+// parameter keeps it from wiping on every later navigation.
+await page.addInitScript(() => {
+  if (!new URLSearchParams(window.location.search).has("wipe")) return;
+  for (const key of Object.keys(localStorage)) {
+    if (String(key).startsWith("serious.music")) localStorage.removeItem(key);
+  }
+});
+
 /** Open the player with a given queue. */
+/**
+ * Open the player with a given queue.
+ *
+ * The stores are cleared by an init script gated on `?wipe=1`, so they are empty
+ * *before the app starts*. Clearing them while the player is mounted is the same
+ * mistake as writing to a file the program under test still holds open: the
+ * player writes its queue straight back, and the "clean slate" is clean for
+ * exactly as long as it takes. The second load without the flag is what actually
+ * starts the case.
+ */
 const open = async (tracks) => {
-  await page.goto(`${pageUrl}?tracks=${encodeURIComponent(JSON.stringify(tracks))}`, {
+  const list = encodeURIComponent(JSON.stringify(tracks));
+  await page.goto(`${pageUrl}?tracks=${list}&wipe=1`, {
     waitUntil: "domcontentloaded",
     timeout: 20000,
   });
   await page.waitForSelector(".music-queue li", { timeout: 15000 });
-  await page.evaluate(() => {
-    for (const key of ["serious.musicQueue.v1", "serious.musicResume.v1", "serious.musicLastPlayed.v1"]) {
-      localStorage.removeItem(key);
-    }
-  });
-  await page.reload({ waitUntil: "domcontentloaded" });
+  // Reload *without* the flag: a document still carrying `wipe=1` would empty the
+  // stores again on every later navigation.
+  await page.goto(`${pageUrl}?tracks=${list}`, { waitUntil: "domcontentloaded", timeout: 20000 });
   await page.waitForSelector(".music-queue li", { timeout: 15000 });
 };
 

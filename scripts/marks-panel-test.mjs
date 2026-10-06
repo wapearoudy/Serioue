@@ -64,11 +64,28 @@ const browser = await chromium.launch({
 const page = await browser.newPage({ viewport: { width: 1100, height: 900 } });
 let failed = false;
 
-const seed = () =>
-  page.evaluate((items) => {
+/**
+ * Seed the highlights *before the app starts*.
+ *
+ * Writing into the store while the panel is mounted is how a test quietly
+ * changes what it is measuring: the panel writes back, and "cleared" state
+ * becomes "cleared, then immediately refilled". An init script runs before any
+ * application code, and the marker keeps it to the first load so that the
+ * deletions this test performs are not undone by a later navigation.
+ */
+await page.addInitScript((items) => {
+  if (localStorage.getItem("marks-panel-test-seeded")) return;
+  try {
     const store = JSON.parse(localStorage.getItem("serious-dev-store") ?? "{}");
-    localStorage.setItem("serious-dev-store", JSON.stringify({ ...store, highlights: items }));
-  }, SEED);
+    localStorage.setItem(
+      "serious-dev-store",
+      JSON.stringify({ ...store, highlights: items }),
+    );
+  } catch {
+    /* a store that cannot be parsed is the harness's problem, not this test's */
+  }
+  localStorage.setItem("marks-panel-test-seeded", "1");
+}, SEED);
 
 /** The highlights as the store actually holds them. */
 const stored = () =>
@@ -77,12 +94,28 @@ const stored = () =>
     return (store.highlights ?? []).map((h) => ({ id: h.id, note: h.note, text: h.text }));
   });
 
+/**
+ * Wait for the store itself to reach a state, rather than sleeping and hoping.
+ *
+ * The panel saves through a command, so the moment the DOM settles is not the
+ * moment the words are stored. Asserting on the stored value — and waiting for
+ * that exact value — is what makes a pass mean the save happened.
+ */
+const waitStored = (id, want) =>
+  page.waitForFunction(
+    ({ id: key, want: expected }) => {
+      const store = JSON.parse(localStorage.getItem("serious-dev-store") ?? "{}");
+      const found = (store.highlights ?? []).find((h) => h.id === key);
+      if (!found) return false;
+      return expected === null ? found === null : found.note === expected;
+    },
+    { id, want },
+    { timeout: 8000 },
+  );
+
 const rowCount = () => page.locator("[data-mark-row]").count();
 
 try {
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20000 });
-  await page.waitForSelector("text=打开划线列表", { timeout: 15000 });
-  await seed();
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20000 });
   await page.waitForSelector("text=打开划线列表", { timeout: 15000 });
   await page.locator("button", { hasText: "打开划线列表" }).click();
@@ -96,14 +129,12 @@ try {
   await page.locator("[data-note-input]").fill("补记：这条其实和进度条有关。");
   await page.locator("[data-note-save]").click();
   await page.waitForSelector("[data-note-editor]", { state: "detached", timeout: 5000 });
+  // Terminal state: the words are in the store, not merely absent from the DOM.
+  await waitStored("h2", "补记：这条其实和进度条有关。");
   const afterSave = await stored();
   const h2 = afterSave.find((h) => h.id === "h2");
   console.log(`  保存后 store 里的 h2.note = ${JSON.stringify(h2.note)}`);
   assert.equal(h2.note, "补记：这条其实和进度条有关。", "the note was not written to the store");
-  assert.ok(
-    await page.locator("[data-note-editor]").count() === 0,
-    "the editor stayed open after saving",
-  );
 
   // -- cancelling leaves the note alone ----------------------------------------
   await page.locator('[data-note-edit="h3"]').click();
@@ -132,7 +163,7 @@ try {
   await page.waitForSelector("[data-note-editor]", { state: "detached", timeout: 5000 });
 
   await page.locator('[data-note-clear="h3"]').click();
-  await page.waitForTimeout(300);
+  await waitStored("h3", "");
   const afterClear = await stored();
   const h3 = afterClear.find((h) => h.id === "h3");
   console.log(
@@ -174,11 +205,28 @@ try {
   // Deleting, and then putting it back.
   await page.locator("[data-delete-yes]").click();
   await page.waitForSelector("[data-undo-bar]", { timeout: 5000 });
+  // Terminal: the record is gone from the store, not just from the list.
+  await page.waitForFunction(
+    () => {
+      const store = JSON.parse(localStorage.getItem("serious-dev-store") ?? "{}");
+      return (store.highlights ?? []).length === 2;
+    },
+    null,
+    { timeout: 8000 },
+  );
   const afterDelete = await stored();
   console.log(`  确认删除后 store 里剩 ${afterDelete.length} 条，撤销条出现`);
   assert.equal(afterDelete.length, 2, "the highlight was not deleted");
   await page.locator("[data-undo]").click();
-  await page.waitForTimeout(400);
+  await page.waitForFunction(
+    () => {
+      const store = JSON.parse(localStorage.getItem("serious-dev-store") ?? "{}");
+      const h = (store.highlights ?? []).find((x) => x.id === "h3");
+      return !!h;
+    },
+    null,
+    { timeout: 8000 },
+  );
   const afterUndo = await stored();
   const restored = afterUndo.find((h) => h.id === "h3");
   console.log(`  撤销后：共 ${afterUndo.length} 条，恢复的 h3.note = ${JSON.stringify(restored.note)}`);
