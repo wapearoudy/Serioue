@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errorMessage, type ArticleItem, type Highlight } from "../api";
 import { Gallery, extractImages, extractSubtitles, sanitize } from "./media";
 import { isPlayable } from "./VideoPlayer";
@@ -147,8 +147,29 @@ export function Reader({
   const [ttsToken, setTtsToken] = useState(0);
   /** The sentence on screen, so a fresh ▶ starts where the reader is looking. */
   const [visibleStart, setVisibleStart] = useState(0);
-  /** Until when the reader's own scrolling is still driving the page. */
-  const followUntil = useRef(0);
+  /**
+   * How many follow-the-sentence scrolls are currently driving the page.
+   *
+   * The panel calls `onFollow` *before* it scrolls, so every programmatic
+   * scroll arrives claimed: while this count is non-zero, scroll events are
+   * ours and must not stop the voice. A scroll with nothing claimed is the
+   * reader taking the page back, and only that stops narration.
+   *
+   * A fixed time window (the old `followUntil = now + 700`) cannot do this
+   * job: a smooth scroll's duration grows with its distance (measured
+   * 1882ms for 6000px), so any window either murders long follows or swallows
+   * real wheel events that land inside it. Counting claimed scrolls from
+   * start to actual end has no distance problem.
+   */
+  const autoScrolls = useRef(0);
+  /** Fires when the last claimed scroll has truly finished. */
+  const autoScrollDone = useRef<number | null>(null);
+  /** The scroll container, so the end-of-scroll listeners have a target. */
+  const scrollEl = useRef<HTMLDivElement | null>(null);
+  const setBodyRef = useCallback((el: HTMLDivElement | null) => {
+    body.current = el;
+    scrollEl.current = el;
+  }, []);
 
   // -- highlights ------------------------------------------------------------
   // A highlight is the quoted passage, not a DOM offset: the page is fetched
@@ -427,10 +448,12 @@ export function Reader({
       scrolled.current = true;
       lastRatio.current = readRatio();
       persist(false);
-      // Scrolling is the reader taking the page back from the voice. Our own
-      // follow-the-sentence scrolling has to be ignored, or the panel would
-      // stop itself on every sentence.
-      if (Date.now() > followUntil.current) {
+      // Scrolling is the reader taking the page back from the voice — unless
+      // the scroll was claimed by our own follow-the-sentence scrolling (see
+      // `autoScrolls` above). Claimed scrolls never touch the token no matter
+      // how long the smooth animation runs; unclaimed ones always do, no
+      // matter how soon after a follow they arrive.
+      if (autoScrolls.current === 0) {
         setTtsToken((t) => t + 1);
         setVisibleStart(firstVisibleSentence(body.current));
       }
@@ -626,15 +649,67 @@ export function Reader({
           positionToken={ttsToken}
           startIndex={Math.min(visibleStart, ttsSentences.length - 1)}
           onFollow={() => {
-            // Mark our own scrolling so the handler above does not read it as
-            // the reader taking the page back.
-            followUntil.current = Date.now() + 700;
+            // Claim the scroll the panel is about to start, and release the
+            // claim when that scroll truly ends — not after a guessed number
+            // of milliseconds.
+            //
+            // `scrollend` is the honest signal (Chromium 114+, hence every
+            // WebView2 in the field). Where it never fires — an interrupted
+            // animation, a platform without the event — the fallback releases
+            // the claim after the scroll has sat still for a few frames, so a
+            // stuck claim can delay the next takeover by ~100ms at most, never
+            // swallow it.
+            autoScrolls.current += 1;
+            if (autoScrollDone.current !== null) {
+              window.clearTimeout(autoScrollDone.current);
+              autoScrollDone.current = null;
+            }
+            const el = scrollEl.current;
+            if (el && "onscrollend" in el) {
+              const release = () => {
+                el.removeEventListener("scrollend", release);
+                autoScrolls.current = Math.max(0, autoScrolls.current - 1);
+              };
+              el.addEventListener("scrollend", release, { once: true });
+              // Belt and braces: if the event never comes, do not hold the
+              // claim forever. 3s is not a guess about the animation length —
+              // the claim survives any number of renewals while scrolling, and
+              // this only fires when nothing has moved for far longer than any
+              // frame gap.
+              autoScrollDone.current = window.setTimeout(() => {
+                el.removeEventListener("scrollend", release);
+                autoScrolls.current = Math.max(0, autoScrolls.current - 1);
+                autoScrollDone.current = null;
+              }, 3000);
+            } else {
+              // No `scrollend` on this platform: release after the scroll has
+              // sat still for a few animation frames.
+              const scroller = scrollEl.current as HTMLDivElement | null;
+              let last = scroller ? scroller.scrollTop : 0;
+              let quiet = 0;
+              const tick = () => {
+                const now = scrollEl.current?.scrollTop ?? last;
+                if (Math.abs(now - last) < 1) {
+                  quiet += 1;
+                  if (quiet >= 5) {
+                    autoScrolls.current = Math.max(0, autoScrolls.current - 1);
+                    autoScrollDone.current = null;
+                    return;
+                  }
+                } else {
+                  last = now;
+                  quiet = 0;
+                }
+                autoScrollDone.current = window.requestAnimationFrame(tick);
+              };
+              autoScrollDone.current = window.requestAnimationFrame(tick);
+            }
           }}
           onClose={() => setTtsOpen(false)}
         />
       )}
 
-      <div className="main-body reader-scroll" ref={body}>
+      <div className="main-body reader-scroll" ref={setBodyRef}>
         {error && (
           // This one used to be the worst notice in the app: no `onClose`, so
           // the close button never rendered and a failed article left a red bar

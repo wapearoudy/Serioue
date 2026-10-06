@@ -172,8 +172,10 @@ export type TtsPanelProps = {
   /**
    * Called just before the panel scrolls the page itself.
    *
-   * The reader treats scrolling as "I am taking over", so it has to be able to
-   * tell its own following-scroll from a person moving the page.
+   * The reader treats unclaimed scrolling as "I am taking over", so the panel
+   * must claim its own following-scroll *before* starting it. The reader
+   * releases the claim when that scroll truly ends (`scrollend`, with a
+   * still-frames fallback) — never after a guessed number of milliseconds.
    */
   onFollow?: () => void;
   onClose?: () => void;
@@ -368,6 +370,9 @@ export function TtsPanel({
     // Follow the voice, but only when the sentence has actually left the screen.
     const box = el.getBoundingClientRect();
     if (box.top < 0 || box.bottom > window.innerHeight) {
+      // Claim first, scroll second: the reader ignores scrolls while a claim
+      // is held, so the order is what keeps this scroll from reading as the
+      // reader taking the page back.
       onFollow?.();
       el.scrollIntoView({ block: "center", behavior: "smooth" });
     }
