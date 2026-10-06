@@ -850,8 +850,9 @@ fn stringify(value: &JsValue, context: &mut Context) -> Option<String> {
 
 /// Evaluate a script and return its value as JSON when possible.
 pub fn eval_to_json(code: &str, json: &Json) -> Result<Json, JsError> {
+    let code = strip_wrapper(code);
     let mut context = new_context(json)?;
-    let wrapped = wrap(code);
+    let wrapped = wrap(&code);
     let value = context
         .eval(Source::from_bytes(&wrapped))
         .map_err(js_err)?;

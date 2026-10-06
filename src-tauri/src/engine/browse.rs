@@ -157,10 +157,56 @@ fn select_containers<'a>(
     doc: &selector::Doc,
     rule: &str,
     json: Option<&'a Value>,
+    body: &str,
 ) -> Vec<Container<'a>> {
     let rule = rule.trim();
     if rule.is_empty() || rule == "body" || rule == "$" {
         return vec![Container::Html(doc.text())];
+    }
+    // A whole-JS list rule (多看阅读 `<js>JSON.parse(result)…</js>`): Legado
+    // hands the response body text to `result`, so the script is evaluated
+    // with the body as a string. An array becomes one container per element;
+    // a lone object becomes a single container. Anything else — a scalar, or
+    // a script that threw — yields no containers, and crucially does NOT fall
+    // through to the selector path: the rule is JS, not CSS, and running it
+    // as a selector would only misread the script and hide the real cause.
+    // `looks_like_js` is the gate, and it does not catch ordinary selectors:
+    // over collections 107 (127 sources) and 160 (176 sources) no
+    // `ruleArticles` that is a plain selector contains `java.` / `evalJS(` /
+    // `cache.` or starts with `@js:` / `<js`, so the old path is untouched.
+    if js::looks_like_js(rule) {
+        let input = Value::String(body.to_string());
+        match js::eval_to_json(rule, &input) {
+            Ok(Value::Array(arr)) => {
+                return arr
+                    .into_iter()
+                    .map(|el| {
+                        // Some rules hand back stringified objects
+                        // (`item_list.map(x => JSON.stringify(x))`): unwrap
+                        // one level so field rules keep working.
+                        if let Value::String(s) = &el {
+                            let t = s.trim();
+                            if t.starts_with('{') || t.starts_with('[') {
+                                if let Ok(v) = serde_json::from_str::<Value>(t) {
+                                    if v.is_object() {
+                                        return Container::OwnedJson(v);
+                                    }
+                                }
+                            }
+                        }
+                        Container::OwnedJson(el)
+                    })
+                    .collect();
+            }
+            Ok(Value::Object(map)) => {
+                return vec![Container::OwnedJson(Value::Object(map))];
+            }
+            // Ran but returned a scalar, or threw: no containers. The caller
+            // suppresses the page-link fallback for JS rules (see
+            // `parse_list_inner`), so this stays an empty list rather than a
+            // fake one.
+            _ => return Vec::new(),
+        }
     }
     if let Some(j) = json {
         if is_json_path(rule) {
@@ -188,10 +234,18 @@ fn select_containers<'a>(
     doc.eval_outer(rule).into_iter().map(Container::Html).collect()
 }
 
-/// A list entry, either an HTML fragment or a JSON node.
+/// A list entry, either an HTML fragment, a JSON node borrowed from the
+/// response body, or a JSON node owned by a whole-JS rule evaluation.
+///
+/// The owned arm exists because `js::eval_to_json` hands back an owned
+/// `Value` while `Container::Json` only borrows: the caller holds the array
+/// only as a temporary, so borrowing out of it cannot live long enough. The
+/// owned value moves into the container instead — no unsafe, no leak, and no
+/// global state.
 enum Container<'a> {
     Html(String),
     Json(&'a Value),
+    OwnedJson(Value),
 }
 
 /// The path of a URL, without scheme or host.
@@ -373,8 +427,13 @@ fn parse_list_inner(
         infer_list_rule(&doc)
     };
 
-    let containers = select_containers(&doc, &rule, json.as_ref());
+    let containers = select_containers(&doc, &rule, json.as_ref(), body);
     let mut items = Vec::new();
+    // Whether ruleArticles is a whole-JS block. Known before any fallback
+    // decision, because a failed JS rule must not be papered over with page
+    // links: a substitute list built from raw anchors would read as success
+    // while carrying none of the rule's content.
+    let rule_is_js = js::looks_like_js(&rule);
 
     for (i, container) in containers.iter().enumerate() {
         let (title, link, image, date) = match container {
@@ -387,6 +446,12 @@ fn parse_list_inner(
                 field_html(&src.rule_pub_date, html, false),
             ),
             Container::Json(value) => (
+                field_json(&src.rule_title, value, "ruleTitle"),
+                field_json(&src.rule_link, value, "ruleLink"),
+                field_json(&src.rule_image, value, "ruleImage"),
+                field_json(&src.rule_pub_date, value, "rulePubDate"),
+            ),
+            Container::OwnedJson(value) => (
                 field_json(&src.rule_title, value, "ruleTitle"),
                 field_json(&src.rule_link, value, "ruleLink"),
                 field_json(&src.rule_image, value, "ruleImage"),
@@ -423,12 +488,17 @@ fn parse_list_inner(
     // what matched carries no address. Plenty of sites render their content
     // links in the HTML and use JavaScript only for chrome and lazy images, so
     // a link list is often a working substitute where the selector is stale.
-    // Falling back beats showing an empty or unopenable page.
+    // Falling back beats showing an empty or unopenable page — except when
+    // the list rule is a whole-JS block: there the script is the rule, and a
+    // substitute built from raw page links would read as success while
+    // carrying none of the rule's content. A throwing or empty JS rule stays
+    // an empty list, and `ListShape` still records the attempt (rule present,
+    // zero containers) so the diagnosis names the rule rather than the page.
     let nothing_openable = items.is_empty() || items.iter().all(|it| it.link.is_empty());
     let openable = items.iter().filter(|it| !it.link.is_empty()).count();
     let has_rule = !src.rule_articles.trim().is_empty();
     let container_count = containers.len();
-    if nothing_openable && json.is_none() {
+    if nothing_openable && json.is_none() && !rule_is_js {
         let links = extract_links(&doc, base_url);
         if links.len() >= FALLBACK_MIN_LINKS {
             // This is the silent case worth naming: the rule produced nothing
@@ -1673,6 +1743,130 @@ mod tests {
             RENDER_DEFAULT,
             crate::store::Settings::default().render_js,
             "the render fallback and Settings::render_js disagree about the default"
+        );
+    }
+
+    // ---- whole-JS list rules ------------------------------------------------
+    //
+    // 多看阅读 (collection 160): `ruleArticles` is not a selector at all but
+    // one `<js>` block whose `JSON.parse(result)` proves Legado hands it the
+    // response body text. The production path used to feed that script to the
+    // CSS selector parser, which matched nothing — a source that ran without
+    // errors and always listed nothing.
+
+    /// The Duokan rule, copied verbatim from collection 160.
+    fn duokan_source() -> Source {
+        Source {
+            source_url: "https://www.duokan.com/store/v0/android/feed".into(),
+            rule_articles: "<js>\nJSON.parse(result).items.map(bk=>({\na:bk.title+bk.summary,\nb:java.timeFormat(bk.create_time*1000),\nc:bk.book_cover,\nd:\"https://www.duokan.com/store/v0/android/feed/\"+bk.id\n}))\n</js>"
+                .into(),
+            rule_title: "a".into(),
+            rule_link: "d".into(),
+            rule_image: "c".into(),
+            rule_pub_date: "b".into(),
+            ..Default::default()
+        }
+    }
+
+    /// Same shape as the real endpoint: an object with an `items` array.
+    fn duokan_body() -> String {
+        r#"{"items":[
+            {"id":"3001","title":"第一本书","summary":"·简介一","create_time":1709613223,"book_cover":"https://c/1.jpg"},
+            {"id":"3002","title":"第二本书","summary":"·简介二","create_time":1709613300,"book_cover":"https://c/2.jpg"},
+            {"id":"3003","title":"第三本书","summary":"·简介三","create_time":1709613400,"book_cover":"https://c/3.jpg"}
+        ]}"#
+            .to_string()
+    }
+
+    #[test]
+    fn a_whole_js_list_rule_produces_items_through_parse_list() {
+        // Through `parse_list_detailed`, not just `eval_to_json`: the point is
+        // the production path, selector bypass and all.
+        let src = duokan_source();
+        let (items, _, shape) = parse_list_detailed(&src, &duokan_body(), "https://www.duokan.com");
+        assert!(
+            items.len() >= 2,
+            "the whole-JS rule should yield items, got {items:#?}"
+        );
+        // Fields really come from the rule: title carries the summary, the
+        // link is the feed address the rule builds, the date is formatted.
+        assert!(
+            items[0].title.contains("第一本书") && items[0].title.contains("·简介一"),
+            "title should be title+summary, got {:?}",
+            items[0].title
+        );
+        assert_eq!(
+            items[1].link,
+            "https://www.duokan.com/store/v0/android/feed/3002"
+        );
+        assert!(
+            items[0].date.contains('-') && items[0].date.len() >= 8,
+            "date should be a formatted date, got {:?}",
+            items[0].date
+        );
+        assert_eq!(items[0].image, "https://c/1.jpg");
+        // And the proof this came from rule evaluation, not the page-link
+        // fallback: the fallback is suppressed for JS rules, so
+        // `fallback_links` is 0 while the rule did the work.
+        assert!(shape.has_rule, "the source declares its own rule");
+        assert_eq!(
+            shape.fallback_links, 0,
+            "a JS-rule listing must never be a page-link substitute: {shape:?}"
+        );
+        assert!(
+            shape.openable >= 2,
+            "the shape should record what the rule produced: {shape:?}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_selector_rule_is_untouched_by_the_js_branch() {
+        // `looks_like_js` must not catch a plain selector: `class.item@all`
+        // carries none of the JS markers, and the old path is byte-identical.
+        let src = src_with(("class.item@all", "img@alt", "a@href"));
+        let body = r#"<div>
+            <div class="item"><a href="/a"><img alt="A"/></a></div>
+            <div class="item"><a href="/b"><img alt="B"/></a></div>
+            <div class="item"><a href="/c"><img alt="C"/></a></div>
+        </div>"#;
+        let (items, _, shape) = parse_list_detailed(&src, body, "https://example.com");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].title, "A");
+        assert_eq!(items[0].link, "https://example.com/a");
+        assert!(!js::looks_like_js("class.item@all"));
+        assert_eq!(shape.fallback_links, 0);
+    }
+
+    #[test]
+    fn a_throwing_js_rule_lists_nothing_and_names_the_rule() {
+        // A JS rule that throws is a rule failure, not an empty page: the
+        // list stays empty (no page-link substitute) and the shape still says
+        // the rule was there, so `diagnose_list` can point at the rule.
+        let src = Source {
+            source_url: "https://www.duokan.com/store/v0/android/feed".into(),
+            rule_articles: "<js>JSON.parse(result).items.map(bk => { throw new Error('boom'); })</js>"
+                .into(),
+            rule_title: "a".into(),
+            rule_link: "d".into(),
+            ..Default::default()
+        };
+        let body = "<html><body>\
+            <a href=\"/p/1\">文章一</a><a href=\"/p/2\">文章二</a>\
+            <a href=\"/p/3\">文章三</a><a href=\"/p/4\">文章四</a>\
+            </body></html>";
+        let (items, _, shape) =
+            parse_list_detailed(&src, body, "https://www.duokan.com");
+        assert!(
+            items.is_empty(),
+            "a throwing JS rule must list nothing, not page links: {items:#?}"
+        );
+        assert!(shape.has_rule, "{shape:?}");
+        assert_eq!(shape.containers, 0, "{shape:?}");
+        assert_eq!(shape.fallback_links, 0, "{shape:?}");
+        let diagnosis = diagnose_list(shape);
+        assert!(
+            diagnosis.is_none(),
+            "an empty page with no substitute is quiet, not broken: {diagnosis:?}"
         );
     }
 }
