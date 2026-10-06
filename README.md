@@ -810,8 +810,8 @@ a track with no lyric file shows no panel
 3. **发布** — 推送一个 tag：
 
    ```bash
-   git tag v0.1.3
-   git push origin v0.1.3
+   git tag v0.1.4
+   git push origin v0.1.4
    ```
 
    GitHub Actions 会自动为 macOS（ARM + Intel）和 Windows 构建、签名，并**直接发布** Release。

@@ -105,7 +105,7 @@
 6. **超 100 章的列表性能**：`ArticleList.tsx:556-591` 全量渲染、无虚拟化（全仓无 `react-window` 之类依赖），但**没有长列表实跑数据**，不知是"卡"还是"只是慢一点"。
 7. **规则引擎的取文质量**：`browse.rs` 只精读了 `:985-1164` 与函数清单，`selector.rs`/`js.rs`/`verify.rs` 只做针对性搜索。若缺口出在"某些源的正文被截断"，本轮未覆盖。
 8. **必须实跑的手感问题**：快进平滑度、`m3u8` 切码率卡顿、进度条 `onChange` 每次 seek 造成的拖动抖动（`VideoPlayer.tsx:1218-1236` 用的是 `onChange` 而非 `onInput` + 松手提交）——均未列入清单。
-9. **`java.timeFormatUTC(ts, fmt, tz)` 未实现**：collection-160 第 2910 行有一处 `{{java.timeFormatUTC(java.getString("updated")*1000,"YYYY-MM-dd HH:mm:ss",8)}}`。影响面 1 个源（vs `timeFormat` 的 3 个），语义是显式时区偏移、与已实现的本地时区版不同。等 t35 落盘后再决定是否单开任务，不扩大 t35 范围。
+9. **`java.timeFormatUTC(ts, fmt, tz)` 已实现**（t54，`6ed6d41`，t57 pass）：collection-160 第 2910 行的 `{{java.timeFormatUTC(java.getString("updated")*1000,"YYYY-MM-dd HH:mm:ss",8)}}` 走显式时区偏移（毫秒加 tz 小时偏移后读 UTC 字段），与本地时区版 `timeFormat` 语义不同，两者并存。
 
 ---
 
@@ -120,7 +120,7 @@
 | — 浅色主题错误提示不可读（本轮新发现，不在此 15 条内） | t36 | **已完成并通过评审**（`239b380` 落盘，t46 pass） |
 | — 滑杆键盘焦点不可见（本轮新发现） | t37 | **已完成并通过评审**（`8f697c4` 落盘，t48 pass） |
 | 1 后台播放 | 待派 | 需要架构改动（播放器移出 Reader 子树） |
-| 2 离线缓存 | t42 | **已落盘评审中**（`f82fcb4` 落盘，t58 评审中；`clear_cache` 清内容缓存、`cache_stats` 显示占用） |
+| 2 离线缓存 | t42 | **已落盘并通过评审**（`f82fcb4` 落盘，t58 pass：`clear_cache` 只清内容缓存、`cache_stats` 显示占用） |
 | 4 全局搜索 | 待派 | 需要跨源搜索命令 + 结果页 |
 | 5 划线静默失配 | t55 | **已落盘并通过评审**（`0f49874` 落盘，t56 pass：`paintMissed` 点名+查看原文） |
 | 6 笔记用 window.prompt | t45 | **已落盘并通过评审**（`da0b79d` 落盘，t53 pass：应用内 NoteDialog） |
@@ -130,3 +130,4 @@
 | 12 宽表格裁切 | 待派 | CSS |
 | 14 历史 300 上限 | 待派 | 后端已支持 limit |
 | 15 字体/简繁 | 待派 | 后端白名单需放开 |
+| — timeFormatUTC 显式时区版（§三-9） | t54 | **已落盘并通过评审**（`6ed6d41` 落盘，t57 pass：毫秒加 tz 偏移后读 UTC，大写兼容，非法返空） |
