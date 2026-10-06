@@ -79,6 +79,10 @@ export interface ArticleResponse {
   media: string[];
   /** Audio files on the page, for the music player. */
   audio: string[];
+  /** True when this body came from the on-disk article cache. */
+  from_cache?: boolean;
+  /** Unix seconds when the cached body was stored; 0 for a fresh fetch. */
+  cached_at?: number;
 }
 
 export interface CategoriesResponse {
@@ -401,6 +405,7 @@ export const api = {
   setSettings: (settings: Settings) => invoke<void>("set_settings", { settings }),
 
   clearCache: () => invoke<number>("clear_cache"),
+  cacheStats: () => invoke<{ entries: number; bytes: number }>("cache_stats"),
 
   clearCookies: () => invoke<void>("clear_cookies"),
 

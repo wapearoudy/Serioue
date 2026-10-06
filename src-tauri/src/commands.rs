@@ -56,6 +56,71 @@ pub struct ArticleResponse {
     pub media: Vec<String>,
     /// Audio files on the page, for the music player.
     pub audio: Vec<String>,
+    /// True when this body came from the on-disk article cache rather than
+    /// the network. The UI and tests use it to tell "offline, served stale"
+    /// apart from "fetched fresh" — without it the two look identical.
+    #[serde(default)]
+    pub from_cache: bool,
+    /// Unix seconds when the cached body was stored. 0 for a fresh fetch.
+    #[serde(default)]
+    pub cached_at: i64,
+}
+
+/// What `load_article` is about to do with the article cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArticleCachePlan {
+    /// The switch is off: do not read, do not write.
+    Bypass,
+    /// The switch is on: read first, write after a successful fetch.
+    Use,
+}
+
+fn article_cache_plan(cache_enabled: bool) -> ArticleCachePlan {
+    if cache_enabled {
+        ArticleCachePlan::Use
+    } else {
+        ArticleCachePlan::Bypass
+    }
+}
+
+/// One cached article on disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedArticle {
+    title: String,
+    html: String,
+    text: String,
+    final_url: String,
+    media: Vec<String>,
+    audio: Vec<String>,
+    /// Unix seconds when this entry was written.
+    cached_at: i64,
+}
+
+impl CachedArticle {
+    fn into_content(self) -> crate::engine::browse::ArticleContent {
+        crate::engine::browse::ArticleContent {
+            title: self.title,
+            html: self.html,
+            text: self.text,
+            final_url: self.final_url,
+            media: self.media,
+            audio: self.audio,
+        }
+    }
+}
+
+impl From<&crate::engine::browse::ArticleContent> for CachedArticle {
+    fn from(c: &crate::engine::browse::ArticleContent) -> Self {
+        CachedArticle {
+            title: c.title.clone(),
+            html: c.html.clone(),
+            text: c.text.clone(),
+            final_url: c.final_url.clone(),
+            media: c.media.clone(),
+            audio: c.audio.clone(),
+            cached_at: 0,
+        }
+    }
 }
 
 fn summary(stored: &StoredSource) -> SourceSummary {
@@ -305,6 +370,35 @@ fn check_url(raw: &str) -> AppResult<()> {
     }
 }
 
+/// The body-fetch step of `load_article`, factored out so the cache policy
+/// around it can be tested without a network: given a fetch closure, apply
+/// the read-first/write-after-success discipline and report where the body
+/// came from.
+fn fetch_article_body(
+    store: &Store,
+    source_id: &str,
+    target: &str,
+    plan: ArticleCachePlan,
+    fetch: impl FnOnce() -> AppResult<crate::engine::browse::ArticleContent>,
+) -> AppResult<(crate::engine::browse::ArticleContent, bool, i64)> {
+    let key = Store::article_cache_key(source_id, target);
+    if plan == ArticleCachePlan::Use {
+        if let Some(raw) = store.cache_read(&key) {
+            if let Ok(cached) = serde_json::from_str::<CachedArticle>(&raw) {
+                let cached_at = cached.cached_at;
+                return Ok((cached.into_content(), true, cached_at));
+            }
+        }
+    }
+    let content = fetch()?;
+    if plan == ArticleCachePlan::Use {
+        let mut entry = CachedArticle::from(&content);
+        entry.cached_at = chrono::Utc::now().timestamp();
+        let _ = store.cache_write(&key, &entry);
+    }
+    Ok((content, false, 0))
+}
+
 #[tauri::command]
 pub async fn load_article(
     state: State<'_, AppState>,
@@ -319,7 +413,15 @@ pub async fn load_article(
             .ok_or_else(|| AppError::NotFound(id.clone()))?;
         let target = crate::util::absolute_url(url.trim(), &stored.source.source_url);
         check_url(&target)?;
-        let content = browse::load_article(&stored.source, &target)?;
+        let plan = article_cache_plan(store.settings().cache_enabled);
+        // Cache first, but only when the switch is on. A hit returns without
+        // touching the network — which is exactly what makes an unreachable
+        // source still readable.
+        let (content, from_cache, cached_at) = fetch_article_body(&store, &id, &target, plan, || {
+            browse::load_article(&stored.source, &target)
+        })?;
+        // History is recorded for cache hits and fresh fetches alike: the
+        // reader opened the article either way.
         store.push_history(HistoryEntry {
             id: String::new(),
             source_id: id.clone(),
@@ -328,9 +430,10 @@ pub async fn load_article(
             source_name: stored.source.display_name().to_string(),
             viewed_at: chrono::Utc::now().timestamp(),
         })?;
-        Ok(content)
+        Ok((content, from_cache, cached_at))
     })
     .await?;
+    let (content, from_cache, cached_at) = content;
 
     Ok(ArticleResponse {
         title: content.title,
@@ -339,6 +442,8 @@ pub async fn load_article(
         final_url: content.final_url,
         media: content.media,
         audio: content.audio,
+        from_cache,
+        cached_at,
     })
 }
 
@@ -944,6 +1049,20 @@ pub async fn clear_cache(state: State<'_, AppState>) -> AppResult<usize> {
     blocking(move || store.cache_clear()).await
 }
 
+/// How many articles are cached on disk, and roughly how many bytes they hold.
+///
+/// The settings page shows this next to the 「清理内容缓存」 button so the
+/// cache is visible rather than a claim.
+#[tauri::command]
+pub async fn cache_stats(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
+    let store = state.store.clone();
+    blocking(move || {
+        let (entries, bytes) = store.cache_stats();
+        Ok(serde_json::json!({ "entries": entries, "bytes": bytes }))
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn clear_cookies() -> AppResult<()> {
     crate::engine::fetch::clear_cookies();
@@ -1030,6 +1149,103 @@ pub async fn current_version(app: tauri::AppHandle) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn article_cache_plan_bypass_reads_and_writes_nothing() {
+        // The switch is the whole policy: off means the network path runs
+        // untouched, with no cache read and no cache write.
+        assert_eq!(article_cache_plan(false), ArticleCachePlan::Bypass);
+        assert_eq!(article_cache_plan(true), ArticleCachePlan::Use);
+    }
+
+    /// A content fetch that behaves like a dead source: it always fails.
+    fn failing_fetch() -> AppResult<crate::engine::browse::ArticleContent> {
+        Err(crate::error::AppError::Network("unreachable".into()))
+    }
+
+    fn fresh_content(marker: &str) -> crate::engine::browse::ArticleContent {
+        crate::engine::browse::ArticleContent {
+            title: format!("t-{marker}"),
+            html: format!("<p>{marker}</p>"),
+            text: marker.into(),
+            final_url: format!("https://x.com/{marker}"),
+            media: vec![],
+            audio: vec![],
+        }
+    }
+
+    fn temp_store() -> (Store, std::path::PathBuf) {
+        // Same scratch strategy as store.rs tests: under the crate's target
+        // dir, not the system temp dir (sandboxes lock it down).
+        let base = std::env::var("CARGO_MANIFEST_DIR")
+            .map(|d| std::path::PathBuf::from(d).join("target").join("test-tmp"))
+            .unwrap_or_else(|_| std::env::temp_dir());
+        let dir = base.join(format!("serious-t42-{}", rand::random::<u64>()));
+        let _ = std::fs::create_dir_all(&dir);
+        (Store::new(dir.clone()).unwrap(), dir)
+    }
+
+    #[test]
+    fn offline_second_open_comes_from_cache_not_network() {
+        // First open: switch on, fetch succeeds -> miss, written.
+        let (store, dir) = temp_store();
+        let (body, from_cache, _) = fetch_article_body(&store, "s", "https://x.com/a", ArticleCachePlan::Use, || {
+            Ok(fresh_content("live"))
+        })
+        .unwrap();
+        assert!(!from_cache, "the first open must be a miss");
+        assert_eq!(body.text, "live");
+        // The source dies. Second open of the SAME article, no network at
+        // all: the fetch closure fails, yet the body still arrives — flagged.
+        let (body2, from_cache2, cached_at) =
+            fetch_article_body(&store, "s", "https://x.com/a", ArticleCachePlan::Use, failing_fetch).unwrap();
+        assert!(from_cache2, "the offline open must be a hit");
+        assert!(cached_at > 0, "a hit must carry its write time");
+        assert_eq!(body2.text, "live", "the offline body must be the cached one");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn switch_off_writes_nothing_and_reads_nothing() {
+        let (store, dir) = temp_store();
+        // Switch off: even a successful fetch leaves no trace...
+        let (_, from_cache, _) = fetch_article_body(&store, "s", "https://x.com/a", ArticleCachePlan::Bypass, || {
+            Ok(fresh_content("live"))
+        })
+        .unwrap();
+        assert!(!from_cache);
+        let key = Store::article_cache_key("s", "https://x.com/a");
+        assert_eq!(store.cache_read(&key), None, "bypass must not write");
+        // ...and a pre-seeded entry is not served either: the read is bypassed.
+        store
+            .cache_write(&key, &serde_json::json!({"title":"t","html":"h","text":"old","final_url":"u","media":[],"audio":[],"cached_at":1}))
+            .unwrap();
+        let r = fetch_article_body(&store, "s", "https://x.com/a", ArticleCachePlan::Bypass, failing_fetch);
+        assert!(r.is_err(), "bypass must not read: the dead source must stay dead");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn clearing_makes_the_offline_article_unreadable() {
+        let (store, dir) = temp_store();
+        fetch_article_body(&store, "s", "https://x.com/a", ArticleCachePlan::Use, || {
+            Ok(fresh_content("live"))
+        })
+        .unwrap();
+        assert_eq!(store.cache_clear().unwrap(), 1);
+        let r = fetch_article_body(&store, "s", "https://x.com/a", ArticleCachePlan::Use, failing_fetch);
+        assert!(r.is_err(), "after a clear the dead source must stay dead");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_fetch_never_poisons_the_cache() {
+        let (store, dir) = temp_store();
+        assert!(fetch_article_body(&store, "s", "https://x.com/a", ArticleCachePlan::Use, failing_fetch).is_err());
+        let key = Store::article_cache_key("s", "https://x.com/a");
+        assert_eq!(store.cache_read(&key), None, "a failure must leave no entry");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn fetch_text_refuses_anything_but_http() {

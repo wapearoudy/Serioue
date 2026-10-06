@@ -19,6 +19,7 @@ export function SettingsPanel({
   const [settings, setSettings] = useState<Settings | null>(null);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [dataDir, setDataDir] = useState("");
+  const [cacheInfo, setCacheInfo] = useState<{ entries: number; bytes: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   /** The operation that failed, so 重试 repeats that one. See RepoBrowser. */
@@ -46,6 +47,7 @@ export function SettingsPanel({
       setRetry(() => () => void load());
     });
     api.dataDir().then(setDataDir).catch(() => {});
+    api.cacheStats().then(setCacheInfo).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -208,6 +210,23 @@ export function SettingsPanel({
             </p>
           </div>
 
+          <div className="field">
+            <label title="打开过的文章保存在本机，源不可达时仍能读到上次抓到的正文">
+              <input
+                type="checkbox"
+                style={{ width: "auto", marginRight: 8 }}
+                data-settings-field="cache_enabled"
+                checked={settings.cache_enabled}
+                onChange={(e) => void save({ ...settings, cache_enabled: e.target.checked }, "离线缓存")}
+              />
+              离线阅读：缓存打开过的文章
+            </label>
+            <p style={{ fontSize: 12, color: "var(--text-faint)", marginTop: 4 }}>
+              打开后只保存正文（标题、正文、媒体地址），不保存账号与 Cookie。源不可达时显示上次抓到的版本；
+              最多保留 200 篇，超出时最久没写入的先被清理。
+            </p>
+          </div>
+
           <h3 style={{ fontSize: 15, margin: "26px 0 10px" }}>已导入的合集</h3>
           {collections.length === 0 ? (
             <p style={{ color: "var(--text-faint)", fontSize: 13 }}>还没有导入任何合集。</p>
@@ -256,12 +275,24 @@ export function SettingsPanel({
               数据目录：{dataDir}
             </p>
           )}
+          {cacheInfo && (
+            <p style={{ fontSize: 12, color: "var(--text-faint)" }} data-settings-cache-info="1">
+              内容缓存：{cacheInfo.entries} 篇
+              {cacheInfo.bytes >= 1024 * 1024
+                ? ` · ${(cacheInfo.bytes / 1024 / 1024).toFixed(1)} MB`
+                : cacheInfo.bytes >= 1024
+                  ? ` · ${(cacheInfo.bytes / 1024).toFixed(1)} KB`
+                  : ` · ${cacheInfo.bytes} B`}
+            </p>
+          )}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button onClick={removeAll}>删除全部源</button>
             <button
+              data-settings-action="clear-cache"
               onClick={async () => {
                 const n = await api.clearCache();
-                setNote(n > 0 ? `已清理 ${n} 条缓存` : "缓存本来就是空的");
+                setCacheInfo(await api.cacheStats().catch(() => null));
+                setNote(n > 0 ? `已清理 ${n} 篇缓存文章` : "内容缓存本来就是空的");
               }}
             >
               清理内容缓存

@@ -731,28 +731,111 @@ impl Store {
     }
 
     // ---- article cache -------------------------------------------------
+    //
+    // Cached article bodies live here — one JSON file per article, named by a
+    // hash of (source_id, article_url), never by the URL itself. A URL carries
+    // `:` (illegal in a Windows filename) and `/` (a directory separator to
+    // `Path::join`), so spelling it into a filename silently breaks the cache
+    // on Windows while looking fine elsewhere. The hash is hex only, which is
+    // legal on Windows, macOS and Linux alike.
+    //
+    // The envelope carries `cached_at` (unix seconds) so a cached body can be
+    // told apart from a fresh one, and so a future "stale after N days" rule
+    // has a timestamp to work from. The current policy is simpler: entries
+    // never expire by age; the directory is bounded by COUNT, evicting the
+    // least-recently-written file first (LRU by mtime). Unbounded growth on a
+    // reader's disk is worse than re-fetching an evicted article.
+
+    /// How many cached articles are kept at most.
+    pub const ARTICLE_CACHE_MAX_ENTRIES: usize = 200;
+
+    /// Prefix that marks files owned by the article cache, so `cache_clear`
+    /// only removes what this cache wrote and leaves anything else alone.
+    const ARTICLE_CACHE_PREFIX: &str = "article-";
+
+    /// Filename-safe key for one article of one source.
+    ///
+    /// Both parts matter: two sources can serve the same article URL with
+    /// different bodies, and serving A's body for B's article is exactly the
+    /// "plausible substitute" failure this project refuses to ship.
+    pub fn article_cache_key(source_id: &str, article_url: &str) -> String {
+        format!("{}{}", Self::ARTICLE_CACHE_PREFIX, crate::util::hash_key(&[source_id, article_url]))
+    }
+
+    /// Cached article envelope: the content plus when it was stored.
+    fn article_cache_path(&self, key: &str) -> PathBuf {
+        self.cache_dir().join(format!("{key}.json"))
+    }
 
     pub fn cache_dir(&self) -> PathBuf {
         self.dir.join("cache")
     }
 
+    /// How many article-cache entries exist, and roughly how many bytes they hold.
+    pub fn cache_stats(&self) -> (usize, u64) {
+        let mut count = 0usize;
+        let mut bytes = 0u64;
+        if let Ok(entries) = std::fs::read_dir(self.cache_dir()) {
+            for e in entries.flatten() {
+                let p = e.path();
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                if p.extension().map(|x| x == "json").unwrap_or(false) && name.starts_with(Self::ARTICLE_CACHE_PREFIX) {
+                    count += 1;
+                    bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
+                }
+            }
+        }
+        (count, bytes)
+    }
+
+    /// Drop the oldest entries until at most MAX remain. Runs after every write.
+    fn cache_evict(&self) {
+        let dir = self.cache_dir();
+        let mut entries: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                if !(p.extension().map(|x| x == "json").unwrap_or(false) && name.starts_with(Self::ARTICLE_CACHE_PREFIX)) {
+                    continue;
+                }
+                let mtime = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+                entries.push((mtime, p));
+            }
+        }
+        if entries.len() <= Self::ARTICLE_CACHE_MAX_ENTRIES {
+            return;
+        }
+        entries.sort_by_key(|a| a.0);
+        for (_, p) in entries.iter().take(entries.len() - Self::ARTICLE_CACHE_MAX_ENTRIES) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
     pub fn cache_read(&self, key: &str) -> Option<String> {
-        let path = self.cache_dir().join(format!("{key}.json"));
+        let path = self.article_cache_path(key);
         std::fs::read_to_string(path).ok()
     }
 
     pub fn cache_write(&self, key: &str, value: &impl Serialize) -> AppResult<()> {
-        let path = self.cache_dir().join(format!("{key}.json"));
+        std::fs::create_dir_all(self.cache_dir())?;
+        let path = self.article_cache_path(key);
         std::fs::write(path, serde_json::to_string(value)?)?;
+        self.cache_evict();
         Ok(())
     }
 
+    /// Remove only article-cache entries; anything else in the directory
+    /// (including the JS script-variable cache, which lives elsewhere) is left
+    /// alone. Returns how many entries were removed.
     pub fn cache_clear(&self) -> AppResult<usize> {
         let dir = self.cache_dir();
         let mut removed = 0;
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for e in entries.flatten() {
-                if e.path().extension().map(|x| x == "json").unwrap_or(false) {
+                let p = e.path();
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                if p.extension().map(|x| x == "json").unwrap_or(false) && name.starts_with(Self::ARTICLE_CACHE_PREFIX) {
                     let _ = std::fs::remove_file(e.path());
                     removed += 1;
                 }
@@ -1173,6 +1256,64 @@ fn test_dir(tag: &str) -> PathBuf {
         let ids: Vec<String> = store.sources().iter().map(|s| s.id.clone()).collect();
         assert_eq!(store.remove_sources(&ids).unwrap(), 2);
         assert!(store.sources().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn article_cache_key_is_filename_safe_and_source_scoped() {
+        // A URL carries `:` (illegal in a Windows filename) and `/` (a
+        // directory separator to `Path::join`): spelling it into a filename
+        // breaks the cache on Windows while looking fine elsewhere.
+        let key = Store::article_cache_key("src-a", "https://x.com/a:b/c?d=e");
+        assert!(key.starts_with("article-"));
+        assert!(!key.contains([':', '/', '\\', '?', '*', '<', '>', '|', '"']));
+        // Same article URL from two sources must not share a file.
+        assert_ne!(
+            Store::article_cache_key("src-a", "https://x.com/a"),
+            Store::article_cache_key("src-b", "https://x.com/a"),
+            "A's body must never be served for B's article"
+        );
+    }
+
+    #[test]
+    fn article_cache_round_trips_and_clears() {
+        let (store, dir) = temp_store();
+        let key = Store::article_cache_key("s", "https://x.com/a");
+        assert_eq!(store.cache_read(&key), None);
+        store.cache_write(&key, &serde_json::json!({"t": 1})).unwrap();
+        assert!(store.cache_read(&key).is_some());
+        let (entries, bytes) = store.cache_stats();
+        assert_eq!(entries, 1);
+        assert!(bytes > 0);
+        assert_eq!(store.cache_clear().unwrap(), 1);
+        assert_eq!(store.cache_read(&key), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn article_cache_evicts_oldest_first() {
+        let (store, dir) = temp_store();
+        for i in 0..(Store::ARTICLE_CACHE_MAX_ENTRIES + 5) {
+            let key = Store::article_cache_key("s", &format!("https://x.com/{i}"));
+            store.cache_write(&key, &serde_json::json!({"i": i})).unwrap();
+            // Distinct mtimes so "oldest" is well-defined on coarse filesystems.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let (entries, _) = store.cache_stats();
+        assert_eq!(entries, Store::ARTICLE_CACHE_MAX_ENTRIES, "the cache must be bounded");
+        assert_eq!(
+            store.cache_read(&Store::article_cache_key("s", "https://x.com/0")),
+            None,
+            "the oldest entry should have been evicted"
+        );
+        assert!(
+            store.cache_read(&Store::article_cache_key(
+                "s",
+                &format!("https://x.com/{}", Store::ARTICLE_CACHE_MAX_ENTRIES + 4)
+            ))
+            .is_some(),
+            "the newest entry must survive"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

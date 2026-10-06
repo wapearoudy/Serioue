@@ -91,6 +91,7 @@ pub fn run() {
             commands::get_settings,
             commands::set_settings,
             commands::clear_cache,
+            commands::cache_stats,
             commands::clear_cookies,
             commands::stats,
             commands::data_dir,

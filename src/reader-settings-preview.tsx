@@ -70,6 +70,8 @@ function installHarness() {
         return 0;
       case "clear_cache":
         return 3;
+      case "cache_stats":
+        return { entries: 3, bytes: 1536 };
       case "clear_cookies":
         return null;
       case "get_sources":
