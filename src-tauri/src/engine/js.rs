@@ -613,6 +613,55 @@ globalThis.java = {
             }
         });
     },
+    /**
+     * Format a millisecond timestamp in an explicit zone, hours east of UTC.
+     *
+     * The single call site in the whole corpus (collection 160, 知乎早报):
+     * `{{java.timeFormatUTC(java.getString("updated")*1000,"YYYY-MM-dd
+     * HH:mm:ss",8)}}`. Unlike `timeFormat`, which renders in the device's own
+     * zone, this one shifts by the given offset first — `tz` may be a number
+     * or a numeric string, and fractions (5.5) work because the shift is done
+     * in milliseconds. Uppercase `YYYY`/`DD` are accepted the way the rule
+     * writes them; empty/illegal input renders as empty, like `timeFormat`.
+     */
+    timeFormatUTC: function (time, format, tz) {
+        var f = format == null ? 'yyyy-MM-dd HH:mm:ss' : String(format);
+        if (f === '') return '';
+        var n = typeof time === 'number' ? time : parseInt(time, 10);
+        if (typeof n !== 'number' || !isFinite(n)) return '';
+        var off = typeof tz === 'number' ? tz : parseFloat(tz);
+        if (!isFinite(off)) off = 0;
+        var d = new Date(n + off * 3600 * 1000);
+        if (isNaN(d.getTime())) return '';
+        var pad = function (v, width) {
+            var s = String(v);
+            while (s.length < width) s = '0' + s;
+            return s;
+        };
+        var weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        // The shift above already moved the instant; read the UTC fields so
+        // the device zone cannot leak back in.
+        return f.replace(/y+|Y+|M+|d+|D+|H+|h+|m+|s+|S+|E+|a+|./g, function (token) {
+            switch (token.charAt(0)) {
+                case 'y':
+                case 'Y': return pad(d.getUTCFullYear(), token.length);
+                case 'M': return pad(d.getUTCMonth() + 1, token.length);
+                case 'd':
+                case 'D': return pad(d.getUTCDate(), token.length);
+                case 'H': return pad(d.getUTCHours(), token.length);
+                case 'h': {
+                    var h12 = d.getUTCHours() % 12;
+                    return pad(h12 === 0 ? 12 : h12, token.length);
+                }
+                case 'm': return pad(d.getUTCMinutes(), token.length);
+                case 's': return pad(d.getUTCSeconds(), token.length);
+                case 'S': return pad(d.getUTCMilliseconds(), token.length);
+                case 'E': return token.length >= 4 ? weekdays[d.getUTCDay()] : weekdays[d.getUTCDay()].slice(0, 3);
+                case 'a': return d.getUTCHours() < 12 ? 'AM' : 'PM';
+                default: return token.charAt(0);
+            }
+        });
+    },
     webViewGetSource: function () { return ''; },
     getCookie: function (name) { return ''; },
     putCookie: function () {},

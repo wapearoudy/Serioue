@@ -416,6 +416,75 @@ fn the_duokan_rule_runs_verbatim() {
     );
 }
 
+/// `java.timeFormatUTC` — the explicit-timezone sibling of `timeFormat`.
+///
+/// The single call site in the whole corpus (collection 160, 知乎早报):
+///
+/// ```text
+/// {{java.timeFormatUTC(java.getString("updated")*1000,"YYYY-MM-dd HH:mm:ss",8)}}
+/// ```
+///
+/// Semantics: format the instant in the zone `tz` hours east of UTC, rather
+/// than in the device's own zone like `timeFormat` does. Uppercase `YYYY` /
+/// `DD` are accepted the way the rule writes them (SimpleDateFormat is
+/// lowercase-only, but rejecting the rule's own spelling would blank the
+/// field). Empty/illegal input renders as empty, like `timeFormat`.
+#[test]
+fn time_format_utc_uses_the_explicit_zone_not_the_device_zone() {
+    // The rule's own shape: `updated` comes back in seconds, the rule scales
+    // to ms, the format is uppercase, and the zone is an explicit +8.
+    // 1709613223 s = 2024-03-05 04:33:43 UTC = 2024-03-05 12:33:43 at +8.
+    let out = js::eval_to_string(
+        "result = java.timeFormatUTC(1709613223 * 1000, 'YYYY-MM-dd HH:mm:ss', 8);",
+        &json!({}),
+    );
+    assert_eq!(
+        out.trim(),
+        "2024-03-05 12:33:43",
+        "an explicit +8 must not depend on the device zone, got {out:?}"
+    );
+
+    // Midnight UTC stays the previous day at negative offsets and moves on at
+    // positive ones — the zone is really applied, not just parsed.
+    let neg = js::eval_to_string(
+        "result = java.timeFormatUTC(1709613223 * 1000, 'YYYY-MM-dd HH:mm:ss', -5);",
+        &json!({}),
+    );
+    assert_eq!(
+        neg.trim(),
+        "2024-03-04 23:33:43",
+        "a -5 zone must shift the day back, got {neg:?}"
+    );
+
+    // String timestamps (what `java.getString(...) * 1000` yields) work too.
+    let from_str = js::eval_to_string(
+        "result = java.timeFormatUTC('1709613223' * 1000, 'YYYY-MM-dd HH:mm:ss', 8);",
+        &json!({}),
+    );
+    assert_eq!(from_str.trim(), "2024-03-05 12:33:43", "got {from_str:?}");
+
+    // Degrades like `timeFormat`: empty, never a throw that kills the rule.
+    for (expr, why) in [
+        ("java.timeFormatUTC(null, 'YYYY-MM-dd HH:mm:ss', 8)", "null timestamp"),
+        (
+            "java.timeFormatUTC('not a number', 'YYYY-MM-dd HH:mm:ss', 8)",
+            "non-numeric timestamp",
+        ),
+        ("java.timeFormatUTC()", "no arguments at all"),
+        ("java.timeFormatUTC(1709613223000, '', 8)", "empty format"),
+        (
+            "java.timeFormatUTC(undefined, 'YYYY-MM-dd HH:mm:ss', 8)",
+            "undefined timestamp",
+        ),
+    ] {
+        let out = js::eval_to_string(&format!("result = {expr};"), &json!({}));
+        assert!(
+            out.trim().is_empty(),
+            "{why} should render as an empty string, got {out:?}"
+        );
+    }
+}
+
 /// Inputs that must not take the whole source down with them.
 ///
 /// A rule that throws here produces an empty list and nothing on screen to
