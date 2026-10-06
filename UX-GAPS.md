@@ -105,6 +105,7 @@
 6. **超 100 章的列表性能**：`ArticleList.tsx:556-591` 全量渲染、无虚拟化（全仓无 `react-window` 之类依赖），但**没有长列表实跑数据**，不知是"卡"还是"只是慢一点"。
 7. **规则引擎的取文质量**：`browse.rs` 只精读了 `:985-1164` 与函数清单，`selector.rs`/`js.rs`/`verify.rs` 只做针对性搜索。若缺口出在"某些源的正文被截断"，本轮未覆盖。
 8. **必须实跑的手感问题**：快进平滑度、`m3u8` 切码率卡顿、进度条 `onChange` 每次 seek 造成的拖动抖动（`VideoPlayer.tsx:1218-1236` 用的是 `onChange` 而非 `onInput` + 松手提交）——均未列入清单。
+9. **`java.timeFormatUTC(ts, fmt, tz)` 未实现**：collection-160 第 2910 行有一处 `{{java.timeFormatUTC(java.getString("updated")*1000,"YYYY-MM-dd HH:mm:ss",8)}}`。影响面 1 个源（vs `timeFormat` 的 3 个），语义是显式时区偏移、与已实现的本地时区版不同。等 t35 落盘后再决定是否单开任务，不扩大 t35 范围。
 
 ---
 
