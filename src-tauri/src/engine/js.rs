@@ -352,6 +352,70 @@ globalThis.java = {
     connect: function (url, headers) { return this.ajax(url, headers); },
     getResponse: function (url, headers) { return this.ajax(url, headers); },
     startBrowser: function () {},
+    /**
+     * Format a millisecond timestamp the way Java's SimpleDateFormat would.
+     *
+     * Both shapes that appear in real collections pass only a timestamp — no
+     * format at all — so the default is the common case, not an edge case:
+     * `java.timeFormat(bk.create_time * 1000)` and
+     * `java.timeFormat(comments[i].createTime)`. Those rules' endpoints answer
+     * with real data, so this one method is the whole difference between a
+     * working source and an empty list.
+     *
+     * Timezone: `SimpleDateFormat(format)` with no TimeZone argument uses
+     * `TimeZone.getDefault()`, i.e. the device's own zone. That is Java platform
+     * semantics rather than something Legado invented. We have not read Legado's
+     * source, so this is an inference with its reason written down — and the
+     * practical corroboration is that a UTC implementation would hand every
+     * reader in UTC+8 yesterday's date between local midnight and 8am, which is
+     * a bug everyone notices rather than nobody mentions.
+     *
+     * Pattern letters follow SimpleDateFormat, where the *count* of a letter is
+     * its minimum width: `M` is `7`, `MM` is `07`. Note that `MM` is the month
+     * and `mm` is the minute — swapping them yields a date that looks nearly
+     * right, which is exactly why it is pinned by a test.
+     *
+     * A letter we do not implement (`E`, `a`, and anything else) is passed
+     * through as written instead of throwing. Java would raise
+     * IllegalArgumentException; here that would take the whole rule down and
+     * leave an empty list with nothing on screen to say why. That is a
+     * deliberate departure, recorded here so it is not "corrected" later by
+     * someone who assumes the strict behaviour was intended.
+     */
+    timeFormat: function (time, format) {
+        var f = format == null ? 'yyyy-MM-dd' : String(format);
+        if (f === '') return '';
+        var n = typeof time === 'number' ? time : parseInt(time, 10);
+        if (typeof n !== 'number' || !isFinite(n)) return '';
+        var d = new Date(n);
+        if (isNaN(d.getTime())) return '';
+        var pad = function (v, width) {
+            var s = String(v);
+            while (s.length < width) s = '0' + s;
+            return s;
+        };
+        var weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        return f.replace(/y+|M+|d+|H+|h+|m+|s+|S+|E+|a+|./g, function (token) {
+            switch (token.charAt(0)) {
+                case 'y': return pad(d.getFullYear(), token.length);
+                case 'M': return pad(d.getMonth() + 1, token.length);
+                case 'd': return pad(d.getDate(), token.length);
+                case 'H': return pad(d.getHours(), token.length);
+                // `h` is Java's 12-hour clock; there is no `K`/`k` here because
+                // no rule in the sample uses them.
+                case 'h': {
+                    var h12 = d.getHours() % 12;
+                    return pad(h12 === 0 ? 12 : h12, token.length);
+                }
+                case 'm': return pad(d.getMinutes(), token.length);
+                case 's': return pad(d.getSeconds(), token.length);
+                case 'S': return pad(d.getMilliseconds(), token.length);
+                case 'E': return token.length >= 4 ? weekdays[d.getDay()] : weekdays[d.getDay()].slice(0, 3);
+                case 'a': return d.getHours() < 12 ? 'AM' : 'PM';
+                default: return token.charAt(0);
+            }
+        });
+    },
     webViewGetSource: function () { return ''; },
     getCookie: function (name) { return ''; },
     putCookie: function () {},

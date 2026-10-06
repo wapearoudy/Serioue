@@ -111,3 +111,121 @@ fn reports_which_extraction_shapes_the_engine_understands() {
     }
     js::set_page(None);
 }
+
+/// `java.timeFormat` — the one missing method that keeps a rule from running at all.
+///
+/// Both shapes found in real collections call it with a millisecond timestamp and
+/// **no format at all**, so the default is not an edge case here, it is the
+/// common case:
+///
+/// ```text
+/// java.timeFormat(bk.create_time * 1000)      多看阅读
+/// java.timeFormat(comments[i].createTime)     葫芦侠
+/// ```
+///
+/// Those two rules' endpoints answer 200 with real data, so this method is the
+/// whole difference between a working source and an empty list.
+///
+/// The reference is Java's `SimpleDateFormat(format)` with no `TimeZone`
+/// argument, which means `TimeZone.getDefault()` — the device's own timezone.
+/// That is a platform rule, not something Legado invented; we have not read
+/// Legado's source and this comment says so rather than implying otherwise. The
+/// corroboration is practical: a UTC implementation would hand every reader in
+/// UTC+8 yesterday's date between local midnight and 8am, which is the kind of
+/// bug everyone notices rather than nobody mentions.
+#[test]
+fn time_format_defaults_to_a_date_and_honours_java_patterns() {
+    // A fixed instant rather than "now", so the expected values can be written
+    // out.
+    let instant = 1_709_613_223_456i64;
+
+    let no_format = js::eval_to_string(
+        &format!("result = java.timeFormat({instant});"),
+        &json!({}),
+    );
+    assert_eq!(
+        no_format.trim(),
+        js::eval_to_string(
+            &format!("result = java.timeFormat({instant}, 'yyyy-MM-dd');"),
+            &json!({})
+        )
+        .trim(),
+        "the one-argument form must agree with the same format spelled out",
+    );
+
+    // Read the calendar fields back out of the engine rather than hard-coding a
+    // date string: the timezone decision is what is being pinned down, and a
+    // literal would hide whether it is local or UTC. Padded the same way, since
+    // an unpadded `2024-3-5` would turn this into an assertion about formatting
+    // rather than about the timezone — and would have failed for the right
+    // reason at the wrong value.
+    let local = js::eval_to_string(
+        &format!(
+            "var d = new Date({instant}); \
+             var p = function (v) {{ return v < 10 ? '0' + v : String(v); }}; \
+             result = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());"
+        ),
+        &json!({}),
+    );
+    assert_eq!(
+        no_format.trim(),
+        local.trim(),
+        "timeFormat must render in the device's own timezone, like SimpleDateFormat's default"
+    );
+
+    // `MM` is the month and `mm` is the minute. Swapping them is the classic
+    // way to get a date that looks almost right.
+    let month = js::eval_to_string(
+        &format!("result = java.timeFormat({instant}, 'MM');"),
+        &json!({}),
+    );
+    let minute = js::eval_to_string(
+        &format!("result = java.timeFormat({instant}, 'mm');"),
+        &json!({}),
+    );
+    assert_eq!(month.len(), 2, "MM must be zero-padded to two digits");
+    assert_ne!(month, minute, "MM and mm cannot be the same field");
+
+    let full = js::eval_to_string(
+        &format!("result = java.timeFormat({instant}, 'yyyy-MM-dd HH:mm:ss');"),
+        &json!({}),
+    );
+    // Checked as a shape rather than by indexing into the string: `yyyy-MM-dd
+    // HH:mm:ss` puts its first separator at index 4, and a magic index is
+    // exactly how this assertion ended up comparing a month digit against a
+    // hyphen.
+    assert!(
+        full.trim().len() == 19
+            && full.trim().chars().all(|c| c.is_ascii_digit() || "-: ".contains(c))
+            && &full.trim()[4..5] == "-"
+            && &full.trim()[7..8] == "-"
+            && &full.trim()[10..11] == " "
+            && &full.trim()[13..14] == ":"
+            && &full.trim()[16..17] == ":",
+        "yyyy-MM-dd HH:mm:ss should be digits and the separators in the right places, got {full:?}"
+    );
+}
+
+/// Inputs that must not take the whole source down with them.
+///
+/// A rule that throws here produces an empty list and nothing on screen to
+/// suggest why. Returning an empty string keeps the rest of the rule running,
+/// which is the lesser evil — and it is a deliberate departure from Java, where
+/// `SimpleDateFormat` throws `IllegalArgumentException`, so it is recorded as
+/// one rather than left to be discovered.
+#[test]
+fn time_format_degrades_instead_of_throwing() {
+    for (expr, why) in [
+        ("java.timeFormat(null)", "null timestamp"),
+        ("java.timeFormat('not a number')", "non-numeric timestamp"),
+        ("java.timeFormat()", "no arguments at all"),
+        ("java.timeFormat(1709613223456, '')", "empty format"),
+        ("java.timeFormat(undefined, 'yyyy')", "undefined timestamp"),
+    ] {
+        let out = js::eval_to_string(&format!("result = {expr};"), &json!({}));
+        assert!(
+            out.trim().is_empty(),
+            "{why} should render as an empty string, got {out:?}"
+        );
+    }
+}
