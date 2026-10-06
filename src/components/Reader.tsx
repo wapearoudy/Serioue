@@ -4,7 +4,7 @@ import { Gallery, extractImages, extractSubtitles, sanitize } from "./media";
 import { isPlayable } from "./VideoPlayer";
 import { VideoPlayer } from "./VideoPlayer";
 import { MusicPlayer, attachLyrics, extractAudio, isAudioUrl, type Track } from "./MusicPlayer";
-import { clearHighlights, paintHighlight } from "./highlight";
+import { clearHighlights, paintHighlight, preview } from "./highlight";
 import { ReaderSettings } from "./ReaderSettings";
 import { Sentences, TtsPanel, firstVisibleSentence, splitSentences, type SentenceRef } from "./TtsPanel";
 import { useKeyboardRows } from "./keyboardRow";
@@ -492,11 +492,25 @@ export function Reader({
 
   // Repaint whenever the DOM is replaced or the set of highlights changes.
   // Clearing first keeps a re-run from nesting marks inside marks.
+  //
+  // The return value is the point of this task: `paintHighlight` answers 0
+  // when the saved passage no longer matches the page (the source rewrote the
+  // wording), and that zero used to be discarded — the highlight stayed in
+  // the panel while the page showed nothing at all. The misses are kept here
+  // so the notice below can name them instead of pretending all is well.
+  const [paintMissed, setPaintMissed] = useState<Highlight[]>([]);
+  /** The missed quote whose full text is expanded, or null. */
+  const [missOpenId, setMissOpenId] = useState<string | null>(null);
   useEffect(() => {
     const el = rich.current;
     if (!el) return;
     clearHighlights(el);
-    marks.forEach((m) => paintHighlight(el, m.text, m.id));
+    const missed: Highlight[] = [];
+    for (const m of marks) {
+      if (paintHighlight(el, m.text, m.id) === 0) missed.push(m);
+    }
+    setPaintMissed(missed);
+    setMissOpenId((open) => (open && missed.some((m) => m.id === open) ? open : null));
   }, [view?.rich, marks]);
 
   /**
@@ -985,6 +999,89 @@ export function Reader({
                 onMouseUp={captureSelection}
                 dangerouslySetInnerHTML={{ __html: view.rich }}
               />
+            )}
+
+            {(view.rendered === "rich" || view.rendered === "video") && paintMissed.length > 0 && (
+              // A highlight that painted 0 marks: the passage is still in the
+              // panel, but the page no longer contains it (the source rewrote
+              // the wording). Say which one missed and offer its full text —
+              // a notice with no name would be silence with padding.
+              <div
+                data-paint-mismatch
+                role="status"
+                style={{
+                  marginTop: 18,
+                  padding: "8px 10px",
+                  fontSize: 12,
+                  lineHeight: 1.7,
+                  color: "var(--text-faint)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                }}
+              >
+                <div>
+                  {paintMissed.length} 条划线在当前页面画不出来（源文可能已改写），正文里没有它的位置：
+                  {paintMissed.map((m) => `「${preview(m.text, 24)}」`).join("、")}。
+                </div>
+                {paintMissed.map((m) => (
+                  <div key={m.id} style={{ marginTop: 4 }}>
+                    <button
+                      className="ghost"
+                      data-mismatch-view={m.id}
+                      onClick={() => setMissOpenId((open) => (open === m.id ? null : m.id))}
+                      style={{ fontSize: 12 }}
+                    >
+                      {missOpenId === m.id ? "收起原文" : "查看原文"}
+                    </button>
+                    {missOpenId === m.id && (
+                      <blockquote data-mismatch-full style={{ margin: "6px 0 0", paddingLeft: 11 }}>
+                        {m.text}
+                      </blockquote>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {view.rendered === "text" && marks.length > 0 && (
+              // Pure-text mode has no rich DOM to paint into, so every
+              // highlight is unpositioned by construction — and must say so
+              // rather than show a page that pretends all is well.
+              <div
+                data-paint-mismatch
+                role="status"
+                style={{
+                  marginTop: 18,
+                  padding: "8px 10px",
+                  fontSize: 12,
+                  lineHeight: 1.7,
+                  color: "var(--text-faint)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                }}
+              >
+                <div>
+                  纯文本模式下 {marks.length} 条划线无法定位（没有可画的原文位置）：
+                  {marks.map((m) => `「${preview(m.text, 24)}」`).join("、")}。
+                </div>
+                {marks.map((m) => (
+                  <div key={m.id} style={{ marginTop: 4 }}>
+                    <button
+                      className="ghost"
+                      data-mismatch-view={m.id}
+                      onClick={() => setMissOpenId((open) => (open === m.id ? null : m.id))}
+                      style={{ fontSize: 12 }}
+                    >
+                      {missOpenId === m.id ? "收起原文" : "查看原文"}
+                    </button>
+                    {missOpenId === m.id && (
+                      <blockquote data-mismatch-full style={{ margin: "6px 0 0", paddingLeft: 11 }}>
+                        {m.text}
+                      </blockquote>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
 
             {view.text.length < 40 && view.rendered !== "text" && (

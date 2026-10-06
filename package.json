@@ -49,7 +49,8 @@
     "test:focus-visible": "node scripts/focus-visible-test.mjs",
     "test:reader-position": "node scripts/reader-position-test.mjs",
     "test:tts-follow": "node scripts/tts-follow-test.mjs",
-    "test:native-dialog": "node scripts/native-dialog-test.mjs"
+    "test:native-dialog": "node scripts/native-dialog-test.mjs",
+    "test:highlight-mismatch": "node scripts/highlight-mismatch-test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
