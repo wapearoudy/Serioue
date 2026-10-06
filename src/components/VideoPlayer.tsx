@@ -7,6 +7,54 @@ import {
   readQualityMemory,
   writeQualityMemory,
 } from "./videoQuality";
+import {
+  readShortcutsEnabled,
+  readSubtitleStyle,
+  subtitleStyleKey,
+  writeShortcutsEnabled,
+  writeSubtitleStyle,
+  type SubtitleSize,
+  type SubtitlePosition,
+  type SubtitleStyle,
+} from "./videoSubtitleStyle";
+
+/**
+ * The shortcut table, shown in the player itself.
+ *
+ * A shortcut nobody can find is a shortcut nobody uses, and it is worse than
+ * none when the viewer does discover it by accident.
+ */
+const SHORTCUTS: { keys: string; what: string }[] = [
+  { keys: "空格 / K", what: "播放 · 暂停" },
+  { keys: "← / →", what: "后退 / 前进 10 秒" },
+  { keys: "↑ / ↓", what: "音量 ±5%" },
+  { keys: "F", what: "全屏 / 退出全屏" },
+  { keys: "M", what: "静音 / 取消静音" },
+  { keys: "C", what: "字幕开关" },
+  { keys: "0–9", what: "跳到 0% – 90%" },
+  { keys: "Esc", what: "退出全屏" },
+];
+
+/** Subtitle sizes as pixels, so the caption is legible on any window size. */
+const SUBTITLE_SIZE_PX: Record<SubtitleSize, number> = {
+  small: 16,
+  medium: 22,
+  large: 30,
+  huge: 38,
+};
+
+const SUBTITLE_SIZE_OPTIONS: [SubtitleSize, string][] = [
+  ["small", "小"],
+  ["medium", "中"],
+  ["large", "大"],
+  ["huge", "特大"],
+];
+
+const SUBTITLE_POSITION_OPTIONS: [SubtitlePosition, string][] = [
+  ["top", "顶部"],
+  ["middle", "中部"],
+  ["bottom", "底部"],
+];
 
 /**
  * hls.js is ~500 kB, which is more than the rest of the app combined.
@@ -85,7 +133,16 @@ type Props = {
   rate?: number;
   onVolumeChange?: (volume: number) => void;
   onRateChange?: (rate: number) => void;
+  /**
+   * Identity of the source, used to remember subtitle appearance per source.
+   * Defaults to the resume key, then the stream URL.
+   */
+  sourceId?: string;
 };
+
+/** How far a seek key press moves, and how much a volume key press changes. */
+const SEEK_STEP_SECONDS = 10;
+const VOLUME_STEP = 0.05;
 
 /** Seconds the viewer can take to cancel before the next entry starts. */
 const AUTOPLAY_WAIT = 6;
@@ -168,6 +225,7 @@ export function VideoPlayer({
   rate = 1,
   onVolumeChange,
   onRateChange,
+  sourceId,
 }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
@@ -185,7 +243,7 @@ export function VideoPlayer({
   // Restore the remembered volume once it arrives or changes.
   useEffect(() => setVol(volume), [volume]);
   const [muted, setMuted] = useState(false);
-  const [panel, setPanel] = useState<"quality" | "speed" | null>(null);
+  const [panel, setPanel] = useState<"quality" | "speed" | "subtitles" | "shortcuts" | null>(null);
   /** Seconds the viewer can jump back to, or null when there is nothing to resume. */
   const [resumeAt, setResumeAt] = useState<number | null>(null);
   /** Set when a video finishes and there is somewhere to go next. */
@@ -223,6 +281,53 @@ export function VideoPlayer({
   // button that is sometimes missing.
   const pipAvailable =
     typeof document !== "undefined" && document.pictureInPictureEnabled === true;
+
+  /* -- captions ----------------------------------------------------------- */
+
+  /**
+   * Captions are drawn by the player, not by the browser.
+   *
+   * A `<track>` cue box cannot be moved: `::cue` accepts almost no geometry, so
+   * "put the subtitles at the top" is not expressible through the native
+   * renderer on any engine. Owning the overlay is what makes the position — and
+   * the font size, and the plate behind the text — real settings rather than a
+   * promise. The browser's own rendering is therefore switched off by setting
+   * every track to `hidden`, which still parses the cues and keeps `activeCues`
+   * available for the mirror below.
+   */
+  const captionKey = subtitleStyleKey(sourceId ?? resumeKey ?? src);
+  const [style, setStyle] = useState<SubtitleStyle>(() => readSubtitleStyle(captionKey));
+  const [captionsOn, setCaptionsOn] = useState(true);
+  /** The line the browser says is current, or null between cues. */
+  const [cue, setCue] = useState<string | null>(null);
+
+  // Reload the style when the source changes: one film's big captions must not
+  // become the next one's.
+  useEffect(() => {
+    setStyle(readSubtitleStyle(captionKey));
+    setCaptionsOn(true);
+    setCue(null);
+  }, [captionKey]);
+
+  const applyStyle = useCallback((next: SubtitleStyle) => {
+    setStyle(next);
+    writeSubtitleStyle(captionKey, next);
+  }, [captionKey]);
+
+  /* -- keyboard shortcuts -------------------------------------------------- */
+
+  /** On by default; a viewer who turns it off means it for every source. */
+  const [shortcutsOn, setShortcutsOn] = useState(() => readShortcutsEnabled());
+  /**
+   * What was just done, for a screen reader and for the eye.
+   *
+   * `seq` is part of the message because repeating the *same* text is not an
+   * announcement: without it, holding `→` twice would be read once.
+   */
+  const [announcement, setAnnouncement] = useState<{ text: string; seq: number } | null>(null);
+  const announce = useCallback((text: string) => {
+    setAnnouncement((prev) => ({ text, seq: (prev?.seq ?? 0) + 1 }));
+  }, []);
 
   /** Which entry the quality memory belongs to. */
   const memKey = qualityMemoryKey(resumeKey, src);
@@ -679,35 +784,169 @@ export function VideoPlayer({
     return () => window.clearTimeout(timer);
   }, [canHide, wake]);
 
+  // -- captions --------------------------------------------------------------
+  // Take the browser's rendering away and mirror the current cue ourselves.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = document.activeElement;
-      if (el && ["INPUT", "TEXTAREA"].includes(el.tagName)) return;
-      const v = video.current;
-      if (!v) return;
-      switch (e.key) {
-        case " ":
-        case "k":
-          e.preventDefault();
-          if (v.paused) v.play().catch(() => {});
-          else v.pause();
+    const el = video.current;
+    if (!el) return;
+
+    const read = () => {
+      let text: string | null = null;
+      for (let i = 0; i < el.textTracks.length; i++) {
+        const active = el.textTracks[i].activeCues;
+        if (active && active.length > 0) {
+          // `VTTCue` carries the text; a plain `TextTrackCue` does not, and
+          // casting is the honest way to say so.
+          const cue = active[active.length - 1] as VTTCue;
+          text = cue.text ?? "";
           break;
-        case "ArrowRight":
-          v.currentTime = Math.min(v.duration || 0, v.currentTime + 10);
-          break;
-        case "ArrowLeft":
-          v.currentTime = Math.max(0, v.currentTime - 10);
-          break;
-        case "f":
-          fullscreen();
-          break;
-        default:
-          break;
+        }
+      }
+      setCue((prev) => (prev === text ? prev : text));
+    };
+
+    // `hidden` rather than `disabled`: the cues still load and stay queryable.
+    for (let i = 0; i < el.textTracks.length; i++) {
+      el.textTracks[i].mode = "hidden";
+    }
+
+    el.addEventListener("timeupdate", read);
+    el.addEventListener("seeked", read);
+    el.addEventListener("loadedmetadata", read);
+    // `cuechange` fires on the track, not on the element.
+    for (let i = 0; i < el.textTracks.length; i++) {
+      el.textTracks[i].addEventListener("cuechange", read);
+    }
+    read();
+    return () => {
+      el.removeEventListener("timeupdate", read);
+      el.removeEventListener("seeked", read);
+      el.removeEventListener("loadedmetadata", read);
+      for (let i = 0; i < el.textTracks.length; i++) {
+        el.textTracks[i].removeEventListener("cuechange", read);
       }
     };
+  }, [subtitles]);
+
+  // -- keyboard shortcuts ---------------------------------------------------
+  useEffect(() => {
+    /**
+     * True when the key belongs to whoever is typing.
+     *
+     * Not a nicety: a viewer renaming a bookmark, or typing a number into a
+     * search box, must not have the film jump or pause under them.
+     */
+    const isTypingTarget = (el: Element | null): boolean => {
+      if (!el) return false;
+      const tag = el.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      return (el as HTMLElement).isContentEditable === true;
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (!shortcutsOn) return;
+      // A modified key belongs to the browser or the OS.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (isTypingTarget(document.activeElement)) return;
+      // Escape is the browser's to handle: it is how fullscreen is left, and
+      // swallowing it here would trap the viewer in fullscreen.
+      if (e.key === "Escape") return;
+      // While a menu is open the letter keys belong to the menu — and the space
+      // bar too, because that is how a menu is walked.
+      if (panel !== null) return;
+
+      const v = video.current;
+      if (!v) return;
+      const duration = Number.isFinite(v.duration) ? v.duration : 0;
+
+      switch (e.key) {
+        case " ":
+        case "Spacebar":
+        case "k":
+        case "K": {
+          e.preventDefault();
+          if (v.paused) {
+            v.play().catch(() => {});
+            announce("播放");
+          } else {
+            v.pause();
+            announce("暂停");
+          }
+          break;
+        }
+        case "ArrowRight":
+        case "ArrowLeft": {
+          e.preventDefault();
+          const forward = e.key === "ArrowRight";
+          // Each press adds to where the playhead already is, so holding the
+          // key accumulates rather than jumping back and forth.
+          const next = Math.max(
+            0,
+            Math.min(
+              duration || v.currentTime,
+              v.currentTime + (forward ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS),
+            ),
+          );
+          v.currentTime = next;
+          setTime(next);
+          announce(`${forward ? "快进" : "快退"} 10 秒 · ${formatSeconds(next)}`);
+          break;
+        }
+        case "ArrowUp":
+        case "ArrowDown": {
+          e.preventDefault();
+          const up = e.key === "ArrowUp";
+          const next = Math.max(0, Math.min(1, v.volume + (up ? VOLUME_STEP : -VOLUME_STEP)));
+          changeVolume(next);
+          announce(`音量 ${Math.round(next * 100)}%`);
+          break;
+        }
+        case "f":
+        case "F": {
+          e.preventDefault();
+          const wasFullscreen = !!document.fullscreenElement;
+          fullscreen();
+          announce(wasFullscreen ? "退出全屏" : "全屏");
+          break;
+        }
+        case "m":
+        case "M": {
+          e.preventDefault();
+          setMuted((was) => {
+            announce(was ? "取消静音" : "静音");
+            return !was;
+          });
+          break;
+        }
+        case "c":
+        case "C": {
+          // Nothing to switch if the page declared no captions.
+          if (subtitles.length === 0) return;
+          e.preventDefault();
+          setCaptionsOn((was) => {
+            announce(was ? "字幕已关闭" : "字幕已开启");
+            return !was;
+          });
+          break;
+        }
+        default: {
+          // 0–9 seek to 0%–90%. Digits typed into a box were filtered out above.
+          if (!/^[0-9]$/.test(e.key)) return;
+          if (duration <= 0) return;
+          e.preventDefault();
+          const percent = Number(e.key) * 10;
+          const next = (duration * percent) / 100;
+          v.currentTime = next;
+          setTime(next);
+          announce(`跳到 ${percent}% · ${formatSeconds(next)}`);
+          break;
+        }
+      }
+    };
+
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [fullscreen]);
+  }, [fullscreen, changeVolume, shortcutsOn, panel, subtitles.length, announce]);
 
   // In fullscreen the extras float over the picture: sitting in a row under a
   // full-height video would put them off screen. The stylesheet's 62vh cap is a
@@ -784,6 +1023,80 @@ export function VideoPlayer({
           />
         ))}
       </video>
+
+      {/*
+        The caption mirror. A `<track>` cue box cannot be positioned or resized
+        from CSS on any engine, so the appearance settings would be decoration
+        if the browser drew the captions itself.
+      */}
+      {captionsOn && cue && (
+        <div
+          data-subtitle-overlay="1"
+          data-subtitle-size={style.size}
+          data-subtitle-position={style.position}
+          data-subtitle-bg={style.background ? "on" : "off"}
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            padding: "0 24px",
+            pointerEvents: "none",
+            zIndex: 5,
+            // Top and middle hug the top of the picture; bottom sits above the
+            // control bar so the captions are never half-hidden behind it.
+            top: style.position === "top" ? 12 : style.position === "middle" ? "45%" : undefined,
+            bottom: style.position === "bottom" ? (isFullscreen ? 52 : 8) : undefined,
+          }}
+        >
+          <span
+            data-subtitle-text="1"
+            style={{
+              fontSize: SUBTITLE_SIZE_PX[style.size],
+              lineHeight: 1.4,
+              color: "#fff",
+              maxWidth: "90%",
+              textAlign: "center",
+              // The plate is the readable floor, not a preference.
+              background: style.background ? "rgba(0, 0, 0, 0.62)" : "transparent",
+              padding: style.background ? "2px 10px" : 0,
+              borderRadius: style.background ? 6 : 0,
+            }}
+          >
+            {cue}
+          </span>
+        </div>
+      )}
+
+      {/* Everything a key press did, for the eye and for a screen reader. */}
+      <div
+        data-announcement="1"
+        role="status"
+        aria-live="polite"
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: isFullscreen ? 72 : 44,
+          transform: "translateX(-50%)",
+          padding: "4px 12px",
+          borderRadius: 999,
+          fontSize: 12,
+          color: "#fff",
+          background: "rgba(0, 0, 0, 0.65)",
+          pointerEvents: "none",
+          opacity: announcement ? 1 : 0,
+          transition: "opacity 200ms ease",
+          zIndex: 6,
+        }}
+      >
+        {/* The zero-width space alternates so repeating the same action is still
+            an announcement rather than silence. */}
+        {announcement
+          ? `${announcement.text}${announcement.seq % 2 ? "\u200B" : ""}`
+          : ""}
+      </div>
 
       {buffering && (
         <div
@@ -924,6 +1237,35 @@ export function VideoPlayer({
           <span data-time="1" style={{ fontSize: 12, minWidth: 78, textAlign: "right" }}>
             {formatSeconds(time)} / {formatSeconds(duration)}
           </span>
+          {subtitles.length > 0 && (
+            <>
+              <button
+                data-subtitle-toggle="1"
+                className={panel === "subtitles" ? "on" : ""}
+                onClick={() => setPanel((p) => (p === "subtitles" ? null : "subtitles"))}
+                title="字幕 (C)"
+                aria-pressed={captionsOn}
+              >
+                字幕{captionsOn ? " 开" : " 关"}
+              </button>
+              <button
+                onClick={() => setCaptionsOn((on) => !on)}
+                title="字幕开关 (C)"
+                aria-pressed={captionsOn}
+              >
+                {captionsOn ? "💬" : "🚫"}
+              </button>
+            </>
+          )}
+          <button
+            data-shortcuts-toggle="1"
+            className={panel === "shortcuts" ? "on" : ""}
+            onClick={() => setPanel((p) => (p === "shortcuts" ? null : "shortcuts"))}
+            title="键盘快捷键"
+            aria-expanded={panel === "shortcuts"}
+          >
+            ⌨
+          </button>
           {pipAvailable && (
             <button
               data-pip="1"
@@ -1002,6 +1344,106 @@ export function VideoPlayer({
                 {s}×
               </button>
             ))}
+          </div>
+        )}
+
+        {panel === "subtitles" && (
+          <div className="player-menu" data-subtitle-menu="1" style={{ minWidth: 176 }}>
+            <div style={{ fontSize: 11, color: "var(--text-faint)", padding: "2px 10px" }}>字号</div>
+            {SUBTITLE_SIZE_OPTIONS.map(([value, label]) => (
+              <button
+                key={value}
+                data-subtitle-size-option={value}
+                className={style.size === value ? "on" : ""}
+                onClick={() => applyStyle({ ...style, size: value })}
+              >
+                {label}
+              </button>
+            ))}
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--text-faint)",
+                padding: "6px 10px 2px",
+                borderTop: "1px solid var(--border)",
+                marginTop: 4,
+              }}
+            >
+              位置
+            </div>
+            {SUBTITLE_POSITION_OPTIONS.map(([value, label]) => (
+              <button
+                key={value}
+                data-subtitle-position-option={value}
+                className={style.position === value ? "on" : ""}
+                onClick={() => applyStyle({ ...style, position: value })}
+              >
+                {label}
+              </button>
+            ))}
+            <div
+              style={{
+                fontSize: 11,
+                color: "var(--text-faint)",
+                padding: "6px 10px 2px",
+                borderTop: "1px solid var(--border)",
+                marginTop: 4,
+              }}
+            >
+              背景
+            </div>
+            <button
+              data-subtitle-background="1"
+              className={style.background ? "on" : ""}
+              onClick={() => applyStyle({ ...style, background: !style.background })}
+            >
+              {style.background ? "半透明黑底（开）" : "半透明黑底（关）"}
+            </button>
+            <div
+              data-subtitle-saved="1"
+              style={{ fontSize: 11, color: "var(--text-faint)", padding: "6px 10px 0" }}
+            >
+              本片已记住：{SUBTITLE_SIZE_PX[style.size]}px ·{" "}
+              {SUBTITLE_POSITION_OPTIONS.find(([v]) => v === style.position)?.[1]} ·{" "}
+              {style.background ? "黑底" : "无底"}
+            </div>
+          </div>
+        )}
+
+        {panel === "shortcuts" && (
+          <div className="player-menu" data-shortcuts-panel="1" style={{ minWidth: 208 }}>
+            <div style={{ fontSize: 11, color: "var(--text-faint)", padding: "2px 10px 6px" }}>
+              键盘快捷键
+            </div>
+            {SHORTCUTS.map((s) => (
+              <div
+                key={s.keys}
+                data-shortcut-row={s.keys}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  fontSize: 12,
+                  padding: "3px 10px",
+                }}
+              >
+                <kbd style={{ fontFamily: "inherit", color: "var(--text-dim)" }}>{s.keys}</kbd>
+                <span style={{ color: "var(--text-faint)" }}>{s.what}</span>
+              </div>
+            ))}
+            <button
+              data-shortcuts-enabled="1"
+              className={shortcutsOn ? "on" : ""}
+              style={{ marginTop: 4, borderTop: "1px solid var(--border)" }}
+              onClick={() => {
+                const next = !shortcutsOn;
+                setShortcutsOn(next);
+                writeShortcutsEnabled(next);
+                announce(next ? "快捷键已开启" : "快捷键已关闭");
+              }}
+            >
+              快捷键{shortcutsOn ? "已开启" : "已关闭"}（点击切换）
+            </button>
           </div>
         )}
 

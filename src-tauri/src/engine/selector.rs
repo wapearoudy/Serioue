@@ -105,7 +105,7 @@ fn classify(step: &str) -> Step {
         "next" => Step::Next,
         "prev" => Step::Prev,
         "parent" => Step::Parent,
-        "Text" | "text" => Step::Text,
+        "Text" | "text" | "textNodes" | "TextNodes" => Step::Text,
         "ownText" | "OwnText" => Step::OwnText,
         "Html" | "html" | "innerHtml" => Step::Html,
         "outerHtml" | "OuterHtml" => Step::OuterHtml,
@@ -787,6 +787,77 @@ fn json_lookup<'a>(root: &'a Value, path: &str) -> Vec<&'a Value> {
     }
 }
 
+/// What a lookup found — and, more usefully, why it found nothing.
+///
+/// "The rule is wrong" and "there is nothing today" both used to arrive as an
+/// empty vector, so a reader saw a blank list with no way to tell a broken rule
+/// from a quiet site. Keeping the reason is what lets the caller say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lookup {
+    /// The expression is not a path at all, or is not valid JSONPath.
+    BadPath(String),
+    /// A valid path that matched nothing in this document.
+    NoMatch,
+    /// Matched, and the values themselves carry no text.
+    EmptyValues,
+    Values,
+}
+
+impl Lookup {
+    /// Does this outcome mean the *rule* is at fault?
+    ///
+    /// Only `BadPath` does. `NoMatch` is what a site that has not updated today
+    /// looks like, and telling someone their rule is broken in that case is the
+    /// one mistake this whole change exists to avoid.
+    pub fn blames_the_rule(&self) -> bool {
+        matches!(self, Lookup::BadPath(_))
+    }
+}
+
+/// Why a lookup ended the way it did, when there is something to say.
+pub fn lookup_verdict(root: &Value, rule: &str) -> Lookup {
+    let compiled = CompiledRule::compile(rule.trim());
+    if compiled.is_empty() {
+        return Lookup::BadPath("规则为空".to_string());
+    }
+
+    // Does the expression parse at all? `jsonpath_lib` is the authority: if it
+    // rejects both the dotted and the bare spelling, the rule is not a path.
+    let selector = compiled.selector.trim();
+    let (expr, alt) = if selector.is_empty() || selector == "$" || selector == "." {
+        ("$".to_string(), "$".to_string())
+    } else {
+        let e = if selector.starts_with('$') {
+            selector.to_string()
+        } else {
+            format!("$.{selector}")
+        };
+        let a = e.trim_start_matches('$').trim_start_matches('.').to_string();
+        (e, a)
+    };
+
+    // Does the expression parse at all? `jsonpath_lib` is the authority: it is
+    // valid if *either* the dotted spelling or the bare spelling is accepted.
+    // Note that "parses" and "matches" are different questions — a valid path
+    // that matches nothing is a working rule on a quiet day, not a broken one.
+    let parses = match (jsonpath_lib::select(root, &expr), jsonpath_lib::select(root, &alt)) {
+        (Ok(_), _) | (_, Ok(_)) => true,
+        (Err(_), Err(_)) => false,
+    };
+    if !parses {
+        return Lookup::BadPath(format!("`{selector}` 不是有效的 JSONPath"));
+    }
+
+    let values = eval_json(root, rule);
+    if values.is_empty() {
+        return Lookup::NoMatch;
+    }
+    if values.iter().all(|v| v.trim().is_empty()) {
+        return Lookup::EmptyValues;
+    }
+    Lookup::Values
+}
+
 /// Evaluate a rule against a JSON body.
 pub fn eval_json(root: &Value, rule: &str) -> Vec<String> {
     let rule = rule.trim();
@@ -851,6 +922,7 @@ pub fn eval_html_outer(html: &str, rule: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     const DOC: &str = r#"
       <html><body>
@@ -925,6 +997,78 @@ mod tests {
         let doc = Doc::parse(r#"<div><a href="/one">1</a><a href="/two">2</a></div>"#);
         assert_eq!(doc.eval("div@tag.a.1@href"), vec!["/two"]);
         assert_eq!(doc.eval("div@tag.a.0@href"), vec!["/one"]);
+    }
+
+    /// Two levels deep, because that is the whole question: a recursive
+    /// descent has to reach `list[].book.title` from the root and a plain
+    /// lookup cannot.
+    fn nested_json() -> Value {
+        json!({
+            "book": { "title": "顶层书名" },
+            "list": [
+                { "book": { "title": "第一本" } },
+                { "book": { "title": "第二本" } }
+            ]
+        })
+    }
+
+    #[test]
+    fn a_plain_jsonpath_reaches_a_nested_field() {
+        let v = eval_json(&nested_json(), "$.list[0].book.title");
+        assert_eq!(v, vec!["第一本".to_string()], "the ordinary path is the baseline");
+    }
+
+    #[test]
+    fn recursive_descent_reaches_every_level() {
+        // Recursive JSONPath has always worked, in its standard spelling. A
+        // census counted the literal string `$$.` in 49 places across 9 sources
+        // and concluded that recursion was unimplemented; reading those rules
+        // showed `$$` is JavaScript — a `.map()` parameter or the host of a
+        // `.match()` call inside a `<js>` block — not a path. About a dozen
+        // sources really do use `$..`, mostly for `ruleContent`.
+        let v = eval_json(&nested_json(), "$..title");
+        assert_eq!(
+            v,
+            vec!["顶层书名".to_string(), "第一本".to_string(), "第二本".to_string()],
+            "recursive descent must reach the top level and every nested one"
+        );
+    }
+
+    #[test]
+    fn a_dollar_dollar_prefix_is_not_treated_as_a_path() {
+        // The rule that must survive a future change: `$$` belongs to the
+        // script, not to the JSON evaluator. Translating it into `$..` would
+        // "fix" 9 sources by corrupting their scripts — rewrite `.match()` into
+        // nonsense and they fail *louder*, not better.
+        for rule in ["$$.book.title", "$$..title", "$$.title"] {
+            let v = eval_json(&nested_json(), rule);
+            println!("`{rule}` -> {v:?}");
+        }
+        let v = eval_json(&nested_json(), "$$.book.title");
+        assert!(
+            v.is_empty(),
+            "`$$.book.title` returned {v:?}. Before 'fixing' this, read the rules that use \
+             `$$`: they are `<js>` blocks where it is a `.map()` parameter or a `.match()` \
+             host, so the correct answer stays empty. The real gap in those sources is \
+             Legado's DOM host objects (`java.getElements`, `java.setContent`, `java.put`), \
+             which are not implemented."
+        );
+    }
+
+    #[test]
+    fn text_nodes_matches_text_on_this_engine() {
+        // `textNodes` is Legado's "the text nodes", not "the text". Mapping it
+        // onto `Step::Text` makes the two agree, which is what the 蓝奏云盘
+        // rules need (`.filename@textNodes` supplies the item title). It is a
+        // deliberate simplification, not an equivalence claim: an element with
+        // several text nodes returns their concatenation here and a list in
+        // Legado. Pinned so a later change to either path is noticed.
+        let html = r#"<div class="f">文件名<span class="x">A</span>B</div><div class="f">第二本</div>"#;
+        let doc = Doc::parse(html);
+        let text = doc.eval(".f@text");
+        let nodes = doc.eval(".f@textNodes");
+        assert_eq!(text, nodes, "@text and @textNodes should agree after the mapping");
+        assert_eq!(text.first().map(String::as_str), Some("文件名AB"));
     }
 
     #[test]

@@ -22,10 +22,27 @@ export function Empty({
   );
 }
 
-export function Banner({ text, onClose }: { text: string; onClose?: () => void }) {
+/**
+ * A message above the content, optionally with something to do about it.
+ *
+ * `action` is not decoration: in an app whose sources fail intermittently, a
+ * notice that can only be closed leaves the reader with no way forward except
+ * fiddling with the page until the request happens to run again. Passing a retry
+ * keeps the recovery where the error is.
+ */
+export function Banner({
+  text,
+  action,
+  onClose,
+}: {
+  text: string;
+  action?: ReactNode;
+  onClose?: () => void;
+}) {
   return (
     <div className="banner">
       <span style={{ flex: 1 }}>{text}</span>
+      {action}
       {onClose && (
         <button className="ghost" onClick={onClose} aria-label="关闭">
           ✕

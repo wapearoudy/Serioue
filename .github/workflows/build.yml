@@ -38,6 +38,14 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --lib
+      # `--lib` alone leaves the Legado DOM host objects uncovered, so a change
+      # that broke `java.getElements` again would have gone out green. These are
+      # the only integration tests that run without network access; the rest
+      # (live, live_rules, rule_fit, source_audit) stay `#[ignore]`d and are run
+      # by hand.
+      - name: Legado DOM regression tests
+        working-directory: src-tauri
+        run: cargo test --test legado_dom
       - name: Lint
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings

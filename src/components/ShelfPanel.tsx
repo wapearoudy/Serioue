@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errorMessage, type ShelfProgress } from "../api";
 import { Banner, Empty, Spinner, timeAgo } from "./ui";
+import { useKeyboardRows } from "./keyboardRow";
 
 export function ShelfPanel({
   onOpen,
@@ -12,9 +13,11 @@ export function ShelfPanel({
 }) {
   const [items, setItems] = useState<ShelfProgress[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const rows = useKeyboardRows();
 
   const load = () => {
     setItems(null);
+    setError(null);
     api
       .shelfProgress()
       .then((list) => setItems(list))
@@ -42,7 +45,24 @@ export function ShelfPanel({
       </div>
 
       <div className="main-body">
-        {error && <Banner text={error} onClose={() => setError(null)} />}
+        {error && (
+          // Each shelf entry is fetched from a live source, so this fails often
+          // and intermittently — repeating the load is the whole point.
+          <Banner
+            text={error}
+            action={
+              <button
+                className="primary"
+                data-retry="shelf"
+                aria-label="重试加载书架"
+                onClick={load}
+              >
+                重试
+              </button>
+            }
+            onClose={() => setError(null)}
+          />
+        )}
         {items === null ? (
           <div style={{ display: "flex", justifyContent: "center", padding: 60 }}>
             <Spinner />
@@ -59,7 +79,16 @@ export function ShelfPanel({
               const known = p.total !== null && p.total > 0;
               const pct = known ? Math.round((p.finished / (p.total as number)) * 100) : 0;
               return (
-                <div className="row" key={entry.id} onClick={() => onOpen(entry)}>
+                <div
+                  className="row"
+                  key={entry.id}
+                  onClick={() => onOpen(entry)}
+                  {...rows.propsFor(`shelf:${entry.id}`, () => onOpen(entry), {
+                    label: `${entry.title || entry.url}，${entry.source_name}${
+                      entry.category ? `，${entry.category}` : ""
+                    }`,
+                  })}
+                >
                   <div className="row-main">
                     <div className="row-title">{entry.title || entry.url}</div>
                     <div className="row-meta">

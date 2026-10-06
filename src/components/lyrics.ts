@@ -80,3 +80,149 @@ export function lineAt(lines: LyricLine[], time: number): number {
   }
   return found;
 }
+
+/* ---------------------------------------------------------------------------
+   Manual calibration
+   ---------------------------------------------------------------------------
+   A lyric sheet that is systematically a second early is the single most
+   common way a music client feels broken, and no amount of automatic parsing
+   fixes it: only the listener can say how far off this recording is. The
+   offsets live here, keyed per song and per source, because one number for the
+   whole installation is worse than none — a viewer who finds track 1 runs
+   200 ms late does not want track 9 shifted the same way. */
+
+export const LYRIC_OFFSET_STORE = "serious.lyricOffset.v1";
+
+/** How far a lyric may be moved, and in what increments. */
+export const OFFSET_MIN_MS = -5000;
+export const OFFSET_MAX_MS = 5000;
+export const OFFSET_STEP_MS = 50;
+export const OFFSET_FINE_STEP_MS = 10;
+
+/** Keep a value inside the range the slider and the store agree on. */
+export function clampOffset(ms: number): number {
+  if (!Number.isFinite(ms)) return 0;
+  return Math.max(OFFSET_MIN_MS, Math.min(OFFSET_MAX_MS, Math.round(ms)));
+}
+
+/**
+ * The identity a lyric offset belongs to.
+ *
+ * The lyric file is preferred: two sources can ship the same audio filename,
+ * while a `.lrc` belongs to exactly one recording.
+ */
+export function lyricSongKey(track: { url: string; lyricUrl?: string }): string {
+  return track.lyricUrl || track.url;
+}
+
+/** The identity a source-wide default belongs to. */
+export function lyricSourceKey(sourceId: string): string {
+  return `source:${sourceId || "unknown"}`;
+}
+
+function readOffsetStore(): Record<string, number> {
+  try {
+    const raw = window.localStorage.getItem(LYRIC_OFFSET_STORE);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "number" && Number.isFinite(v)) out[k] = clampOffset(v);
+    }
+    return out;
+  } catch {
+    // Private mode, or a store written by an older build. Neither is worth
+    // breaking playback over.
+    return {};
+  }
+}
+
+function writeOffsetStore(store: Record<string, number>): void {
+  try {
+    window.localStorage.setItem(LYRIC_OFFSET_STORE, JSON.stringify(store));
+  } catch {
+    /* the adjustment still applies to this session */
+  }
+}
+
+/** The offset saved for one song, or null when this song has never been set. */
+export function readLyricOffset(songKey: string): number | null {
+  const value = readOffsetStore()[songKey];
+  return value === undefined ? null : value;
+}
+
+/** Save an offset for one song. */
+export function writeLyricOffset(songKey: string, ms: number): void {
+  const store = readOffsetStore();
+  store[songKey] = clampOffset(ms);
+  writeOffsetStore(store);
+}
+
+/** Save a default that every song of this source without its own entry uses. */
+export function writeSourceOffset(sourceKey: string, ms: number): void {
+  const store = readOffsetStore();
+  store[sourceKey] = clampOffset(ms);
+  writeOffsetStore(store);
+}
+
+/**
+ * Forget one song's offset, so it falls back to the source default.
+ *
+ * With no key the song falls back to what it would have used anyway — which is
+ * why this is a reset and not a write of zero.
+ */
+export function clearLyricOffset(songKey: string): void {
+  const store = readOffsetStore();
+  if (!(songKey in store)) return;
+  delete store[songKey];
+  writeOffsetStore(store);
+}
+
+/**
+ * The offset to use right now: the song's own if it has one, otherwise the
+ * source default, otherwise the file's own `[offset:]` tag, otherwise nothing.
+ */
+export function effectiveLyricOffset(
+  songKey: string,
+  sourceKey: string,
+  fileOffsetMs?: number | null,
+): number {
+  const own = readLyricOffset(songKey);
+  if (own !== null) return own;
+  const source = readLyricOffset(sourceKey);
+  if (source !== null) return source;
+  if (typeof fileOffsetMs === "number" && Number.isFinite(fileOffsetMs)) {
+    return clampOffset(fileOffsetMs);
+  }
+  return 0;
+}
+
+/**
+ * The offset in words, because "−400" tells nobody whether the lyric should
+ * come earlier or later. A positive offset means the lyric shows earlier.
+ */
+export function formatLyricOffset(ms: number): string {
+  if (!ms) return "未校准（0 ms）";
+  return ms > 0 ? `歌词提前 ${ms} ms` : `歌词延后 ${Math.abs(ms)} ms`;
+}
+
+/** The audio position a lyric line is judged against, given an offset. */
+export function offsetPosition(position: number, offsetMs: number): number {
+  return position - clampOffset(offsetMs) / 1000;
+}
+
+/**
+ * The `[offset:]` tag some files carry, in milliseconds.
+ *
+ * The LRC convention adds the value to every timestamp, so a positive offset
+ * makes lyrics appear earlier — the same sign used above. Returned separately
+ * so it can be a *starting point* the listener overrides, rather than a value
+ * silently baked into every line.
+ */
+export function parseLrcOffset(raw: string): number | null {
+  const match = raw.match(/^\s*\[offset:\s*([+-]?\d+)\s*\]/im);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}

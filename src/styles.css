@@ -1250,6 +1250,94 @@ select:focus {
 }
 
 /* ------------------------------------------------------------------ */
+/* Reading aloud (听书)                                                */
+/* ------------------------------------------------------------------ */
+
+.tts-panel {
+  flex-shrink: 0;
+  padding: 10px 18px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tts-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tts-row button {
+  font-size: 13px;
+  padding: 5px 12px;
+}
+
+.tts-progress {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.tts-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.tts-field input[type="range"] {
+  width: 120px;
+  accent-color: var(--accent);
+}
+
+.tts-field select {
+  max-width: 240px;
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.tts-note {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tts-note button {
+  font-size: 12px;
+  padding: 1px 8px;
+  flex-shrink: 0;
+}
+
+/* For a screen reader only: the sentence being spoken, so the narration is
+   available to anyone who cannot hear it. */
+.tts-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The sentence being read. Defined once, here, rather than inline: the panel
+   only ever adds the class, never the style. */
+.reader-body .sentence-active {
+  /* Enough contrast to read against every reading theme, from near black to
+     sepia, without repainting the text colour. */
+  background: rgba(79, 140, 255, 0.28);
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.28);
+}
+
+/* ------------------------------------------------------------------ */
 /* Reading statistics                                                  */
 /* ------------------------------------------------------------------ */
 

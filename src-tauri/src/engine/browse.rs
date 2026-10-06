@@ -27,6 +27,84 @@ pub struct ArticlePage {
     pub next: Option<String>,
     /// The URL that was actually fetched, after redirects and templating.
     pub final_url: String,
+    /// Set only when the source's own rules are known to have failed and the
+    /// listing was assembled some other way. It is `None` for the ordinary
+    /// case, including a page that is simply empty today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnosis: Option<String>,
+}
+
+/// How many bare page links are worth presenting as a listing.
+///
+/// Below this a page is a page, not a list, and standing its links up as one
+/// shows the reader navigation chrome dressed up as content.
+pub const FALLBACK_MIN_LINKS: usize = 3;
+
+/// Why a listing looks the way it does, counted rather than guessed.
+///
+/// The counts are what [`parse_list_inner`] already knows; nothing here looks at
+/// the page, so the rule is testable without a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListShape {
+    /// The source declares a list rule of its own.
+    pub has_rule: bool,
+    /// How many containers the rule selected.
+    pub containers: usize,
+    /// How many entries the rules turned into something openable.
+    pub openable: usize,
+    /// How many bare page links the fallback would substitute.
+    pub fallback_links: usize,
+}
+
+/// A shape for the paths that never consult the source's list rule at all.
+///
+/// `has_rule: false` is the point: [`diagnose_list`] stays silent for these, so a
+/// bare-URL source and a `ruleArticles: "body"` bookmark page — both of which
+/// present links by design — are never reported as broken.
+fn shape_without_rules(fallback_links: usize) -> ListShape {
+    ListShape { has_rule: false, containers: 0, openable: fallback_links, fallback_links }
+}
+
+/// Explain a listing whose rules did not do the work.
+///
+/// This is deliberately narrow. A source whose page has nothing on it today is
+/// **not** diagnosed: `containers == 0` with no links to fall back on is an empty
+/// page, not a stale rule, and telling someone their source is broken when it is
+/// merely quiet is worse than saying nothing.
+///
+/// It fires in exactly two situations, both of which are facts rather than
+/// inferences:
+///
+/// * the rule selected nothing while the page had enough links that the
+///   fallback could build a listing — the rule is demonstrably not matching this
+///   page, and the user is looking at a substitute they did not ask for;
+/// * the rule selected containers but none of them yielded an openable entry,
+///   so the field rules are not extracting what the container holds.
+pub fn diagnose_list(shape: ListShape) -> Option<String> {
+    if !shape.has_rule {
+        // Nothing the user wrote can be out of date.
+        return None;
+    }
+    if shape.containers == 0 {
+        if shape.fallback_links >= FALLBACK_MIN_LINKS {
+            return Some(format!(
+                "这个源的规则在页面上一个都没匹配上，这里列的是页面上的链接（共 {} 条）。\
+                 规则可能已经过时了，换个源或重新收集规则会更好用。",
+                shape.fallback_links
+            ));
+        }
+        // No rule match *and* nothing on the page to fall back on. That is an
+        // empty page, and we have no business calling it a broken source.
+        return None;
+    }
+    if shape.openable == 0 {
+        return Some(format!(
+            "规则匹配到了 {} 个区块，但没能从中取出可打开的条目 —— \
+             取标题或地址的那条规则多半已经对不上了。",
+            shape.containers
+        ));
+    }
+    None
 }
 
 /// Which page of a category to request.
@@ -222,6 +300,32 @@ pub fn audio_from(body: &str) -> Vec<String> {
 
 /// Turn a list body into articles using the source's field rules.
 pub fn parse_list(src: &Source, body: &str, base_url: &str) -> (Vec<ArticleItem>, Option<String>) {
+    let (items, next, _) = parse_list_detailed(src, body, base_url);
+    (items, next)
+}
+
+/// Parse a listing and also report what the rules managed to do, so a caller can
+/// tell "the page is empty today" from "this source's rule no longer matches".
+pub fn parse_list_detailed(
+    src: &Source,
+    body: &str,
+    base_url: &str,
+) -> (Vec<ArticleItem>, Option<String>, ListShape) {
+    // A rule that walks the page — the 蓝奏云盘 family does, through
+    // `java.getElements` / `setContent` — needs the markup to walk. Binding it
+    // here rather than at each call site keeps every caller of this function
+    // consistent, and the binding is dropped again on the way out.
+    js::set_page(Some(body.to_string()));
+    let parsed = parse_list_inner(src, body, base_url);
+    js::set_page(None);
+    parsed
+}
+
+fn parse_list_inner(
+    src: &Source,
+    body: &str,
+    base_url: &str,
+) -> (Vec<ArticleItem>, Option<String>, ListShape) {
     let json = as_json(body);
     let doc = selector::Doc::parse(body);
 
@@ -238,7 +342,8 @@ pub fn parse_list(src: &Source, body: &str, base_url: &str) -> (Vec<ArticleItem>
     if !has_rules && json.is_none() {
         let links = extract_links(&doc, base_url);
         if !links.is_empty() {
-            return (links, next(&doc, None));
+            let found = links.len();
+            return (links, next(&doc, None), shape_without_rules(found));
         }
     }
 
@@ -252,8 +357,9 @@ pub fn parse_list(src: &Source, body: &str, base_url: &str) -> (Vec<ArticleItem>
         && src.rule_link.trim().is_empty();
     if body_only && json.is_none() {
         let links = extract_links(&doc, base_url);
-        if links.len() >= 3 {
-            return (links, next(&doc, None));
+        if links.len() >= FALLBACK_MIN_LINKS {
+            let found = links.len();
+            return (links, next(&doc, None), shape_without_rules(found));
         }
     }
 
@@ -319,15 +425,32 @@ pub fn parse_list(src: &Source, body: &str, base_url: &str) -> (Vec<ArticleItem>
     // a link list is often a working substitute where the selector is stale.
     // Falling back beats showing an empty or unopenable page.
     let nothing_openable = items.is_empty() || items.iter().all(|it| it.link.is_empty());
+    let openable = items.iter().filter(|it| !it.link.is_empty()).count();
+    let has_rule = !src.rule_articles.trim().is_empty();
+    let container_count = containers.len();
     if nothing_openable && json.is_none() {
         let links = extract_links(&doc, base_url);
-        if links.len() >= 3 {
-            return (links, next(&doc, None));
+        if links.len() >= FALLBACK_MIN_LINKS {
+            // This is the silent case worth naming: the rule produced nothing
+            // and the reader is being shown a substitute they never asked for.
+            let shape = ListShape {
+                has_rule,
+                containers: container_count,
+                openable,
+                fallback_links: links.len(),
+            };
+            return (links, next(&doc, None), shape);
         }
     }
 
     let next = find_next_page(src, &doc, json.as_ref(), base_url, &src.rule_next_page);
-    (items, next)
+    let shape = ListShape {
+        has_rule,
+        containers: container_count,
+        openable,
+        fallback_links: 0,
+    };
+    (items, next, shape)
 }
 
 /// Turn a page into a list of its content links.
@@ -657,7 +780,8 @@ pub fn load_page(src: &Source, req: &PageRequest) -> crate::error::AppResult<Art
     js::set_script_headers(None);
     let resp = resp?;
 
-    let (items, next) = parse_list(src, &resp.body, &resp.url);
+    let (items, next, shape) = parse_list_detailed(src, &resp.body, &resp.url);
+    let diagnosis = diagnose_list(shape);
 
     // The cheap path produced nothing usable on a source that asks for
     // JavaScript. Rendering is offered only in that case, never on a page that
@@ -674,9 +798,9 @@ pub fn load_page(src: &Source, req: &PageRequest) -> crate::error::AppResult<Art
         Some((new_items, new_next))
             if !new_items.is_empty() && new_items.iter().any(|i| !i.link.is_empty()) =>
         {
-            Ok(ArticlePage { items: new_items, next: new_next.or(next), final_url: resp.url })
+            Ok(ArticlePage { items: new_items, next: new_next.or(next), final_url: resp.url, diagnosis })
         }
-        _ => Ok(ArticlePage { items, next, final_url: resp.url }),
+        _ => Ok(ArticlePage { items, next, final_url: resp.url, diagnosis }),
     }
 }
 
@@ -1041,6 +1165,97 @@ mod suffix_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -- the diagnosis ------------------------------------------------------
+    //
+    // The false-positive half matters more than the true-positive half: a source
+    // that is merely quiet today must never be told its rule is broken.
+
+    #[test]
+    fn a_rule_that_matched_nothing_and_the_page_had_links_is_explained() {
+        let d = diagnose_list(ListShape {
+            has_rule: true,
+            containers: 0,
+            openable: 0,
+            fallback_links: 12,
+        })
+        .expect("a substituted listing should say so");
+        assert!(d.contains("12"), "the count should be in the sentence: {d}");
+        assert!(d.contains("规则"), "{d}");
+    }
+
+    #[test]
+    fn containers_without_a_single_openable_entry_is_explained() {
+        let d = diagnose_list(ListShape {
+            has_rule: true,
+            containers: 7,
+            openable: 0,
+            fallback_links: 0,
+        })
+        .expect("matched-but-unusable containers should say so");
+        assert!(d.contains('7'), "{d}");
+    }
+
+    #[test]
+    fn a_page_that_is_simply_empty_today_is_not_diagnosed() {
+        // No container matched *and* there was nothing to stand up as a list.
+        // That is an empty page, not a stale rule — saying otherwise would
+        // accuse a healthy source every time its site has nothing new.
+        assert_eq!(
+            diagnose_list(ListShape {
+                has_rule: true,
+                containers: 0,
+                openable: 0,
+                fallback_links: 0,
+            }),
+            None
+        );
+        // One or two stray links is still not a listing.
+        for n in [1usize, 2] {
+            assert_eq!(
+                diagnose_list(ListShape {
+                    has_rule: true,
+                    containers: 0,
+                    openable: 0,
+                    fallback_links: n,
+                }),
+                None,
+                "{n} links should not read as a list"
+            );
+        }
+    }
+
+    #[test]
+    fn a_working_source_is_never_diagnosed() {
+        assert_eq!(
+            diagnose_list(ListShape {
+                has_rule: true,
+                containers: 30,
+                openable: 30,
+                fallback_links: 0,
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn a_source_without_its_own_rule_is_never_diagnosed() {
+        // Bare-URL and `ruleArticles: body` sources present links by design.
+        // Diagnosing them would fire on every single load.
+        assert_eq!(
+            diagnose_list(shape_without_rules(40)),
+            None
+        );
+        assert_eq!(
+            diagnose_list(ListShape {
+                has_rule: false,
+                containers: 0,
+                openable: 40,
+                fallback_links: 40,
+            }),
+            None
+        );
+    }
 
     fn src_with(rules: (&str, &str, &str)) -> Source {
         Source {

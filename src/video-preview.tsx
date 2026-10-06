@@ -14,9 +14,12 @@ import type { Subtitle } from "./components/media";
 import "./styles.css";
 
 const STREAMS = [
-  { label: "HLS 多码率", src: "/demo/hls/master.m3u8" },
-  { label: "HLS 单码率 360p", src: "/demo/hls/360p.m3u8" },
-  { label: "损坏的源", src: "/demo/hls/missing.m3u8" },
+  // Each stream carries its own `sourceId`, because that is what the subtitle
+  // appearance is remembered against: one entry's big captions must not follow
+  // the viewer into the next one.
+  { label: "HLS 多码率", src: "/demo/hls/master.m3u8", id: "demo:master" },
+  { label: "HLS 单码率 360p", src: "/demo/hls/360p.m3u8", id: "demo:360p" },
+  { label: "损坏的源", src: "/demo/hls/missing.m3u8", id: "demo:broken" },
 ];
 
 function Preview() {
@@ -49,10 +52,21 @@ function Preview() {
           src={stream.src}
           title={stream.label}
           resumeKey="demo:video"
+          sourceId={stream.id}
           subtitles={subs}
           nextTitle={nextOn ? "第 2 集 · 示例" : undefined}
           onNext={nextOn ? () => console.log("[preview] autoplay next") : undefined}
         />
+        {/* A real typing target: the shortcuts must get out of its way. */}
+        <label style={{ display: "block", fontSize: 12, marginTop: 8 }}>
+          备注（在这里打字时，快捷键应当让路）
+          <input
+            data-preview-note="1"
+            type="text"
+            defaultValue=""
+            style={{ display: "block", width: 260, marginTop: 4 }}
+          />
+        </label>
         <p style={{ color: "var(--text-faint)", fontSize: 12 }}>
           isPlayable(/demo/hls/master.m3u8) = {String(isPlayable("/demo/hls/master.m3u8"))}
         </p>

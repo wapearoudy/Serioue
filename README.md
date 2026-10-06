@@ -29,6 +29,15 @@
 | 音乐睡眠定时 | 🌙 定时 15/30/45/60 分钟或「本曲结束」；到点后最后 20 秒**音频本身**线性淡出到 0 再暂停，剩余时间常驻可见 |
 | 视频手感 | 全屏播放 3 秒无操作自动隐藏控件、移动鼠标立刻淡回、暂停时常显；双击画面切换全屏；缓冲时显示「缓冲中…」与已缓冲百分比 |
 | 画质记忆 | 手动选过的画质**按条目记住**，重开仍是那一档；画质菜单里可「清除本条画质记忆」 |
+| 视频快捷键 | `空格`/`k` 播放暂停、`←/→` ±10 秒、`↑/↓` 音量、`m` 静音、`0-9` 跳到百分比、`f` 全屏、`c` 字幕开关；在输入框里打字不会误触发 |
+| 字幕外观 | 字号、位置（底部 / 居中 / **顶部**）、底板样式**按源分别记住**；字幕由播放器自绘，见下方说明 |
+| 听书 | 把文章逐句朗读，当前句高亮跟随；可暂停、继续、从头开始 |
+| 音乐播放队列 | 队列可插播、删除、清空；插播后「下一首」真的落到插播的那首 |
+| 歌词校准 | 歌词对不上时按 ±50ms 步进微调，**按源分别记住** |
+| 音量记忆 + 断点续听 | 每个源的音量单独记住；听到一半的歌重开会提示「已从 0:20 继续」 |
+| 图集 | 图集源进图集浏览：缩略图、左右翻页、缩放，坏图不会卡住翻页 |
+| 列表页 | 清除搜索后原标题逐字回来；整张卡片可 Tab 到达、Enter/Space 打开；切换分类不闪空 |
+| 错误可重试 | 历史 / 统计 / 书架 / 文章加载失败时，错误条上带「重试」和关闭按钮 |
 | 源校验 | 分阶段体检每个源：规则 / 首页 / 列表 / 详情 / 搜索，逐项给出可执行的结论 |
 | 收藏 / 历史 / 搜索 | 常用源收藏、阅读历史回溯、单源内搜索 |
 | 跨平台 | macOS（Apple Silicon + Intel）与 Windows |
@@ -132,6 +141,58 @@ failure state: progress.json 读取失败 ✕ 统计没读出来 …      ← �
 
 最后一条同样是验收项：统计读不出来时必须显示错误和出路，**不能永远转圈**。
 
+### 听书（TTS）
+
+文章里逐句朗读，**当前句高亮跟随**；可以暂停、继续、从头开始。点 ▶ 会从**当前屏幕上看得见的那句**开始，
+而不是从文章第一句 —— 一篇已经滚到中段的文章，点播放不该把人拽回开头。
+
+滚动页面会停读，并把基准挪到你现在看到的那一句。
+
+> ### 听书依赖系统的语音引擎
+>
+> 走的是 WebView2 / Windows 自带的语音合成。**没有装任何语音引擎的机器上，
+> 按钮会禁用并写明原因** —— 这是设计，不是缺陷：这个应用不打包语音引擎。
+>
+> 另有一个平台行为要知道：**很长的句子会在大约 15 秒后静默停住**，`speaking` 变 false、
+> 既没有 `onend` 也没有 `onerror`。所以这里有每 10 秒一次的心跳，发现引擎不动就续上，
+> 而不是指望它自己报告。
+
+实测（`node scripts/reader-tts-test.mjs`）：
+
+```
+voices on this machine: 3
+sentences in the page:  42
+▶ sentence 1/42: "…"
+the highlighted sentence is exactly what was handed to speak()
+⏸ paused: engine silent, cursor kept for 继续
+⏹ stop: engine silent, back to sentence 1, highlight gone
+scrolling stopped it and re-based onto sentence 7
+closing the panel (a real React unmount) cancelled the voice
+```
+
+> 没有语音引擎的机器上，这条腿会打印
+> `LIMIT: no TTS voice on this machine — state machine not exercised.`
+> 并退出 —— 它不会假装测过了。
+
+### 图集
+
+图集源直接进图集浏览，不当成一篇长文章：缩略图 + 左右翻页 + 缩放。
+
+翻页时**下一张已经预载进 DOM**，所以不会出现「点了翻页然后白一下」。
+**坏图只影响那一张**：翻到坏图时给出提示，继续翻就能走到下一张，卡不住整本。
+
+实测（`pnpm test:gallery`，夹具里故意放了一张 404）：
+
+```
+thumbnails: 3 · alts ["…", "…", "…"]
+the broken picture shows: "…"
+opened on "第 1 / 4 张", src=…
+→  第 2 / 4 张 · src=… · naturalWidth=…
+→  第 3 / 4 张 (the dead one) says: "…"
+→  past the dead picture: 第 4 / 4 张, src=…
+Home → 第 1 / 4 张 · prev disabled=true
+```
+
 ### 书架
 
 「继续阅读」记的是**单篇文章**，书架记的是**一整个分类列表** —— 也就是读者真正会反复回去的那本书。
@@ -227,6 +288,84 @@ pnpm test:reader    # Playwright 驱动真实浏览器
 章节按钮走到首尾会禁用、读到章末提示下一章、「暂不」之后不再打扰、下一章重新提示、
 目录给读完的章打勾、给读到一半的标点。
 
+### 列表页
+
+三处以前会让人以为「源坏了」的地方，现在都不会了：
+
+- **清除搜索后原标题逐字回来**。搜索是有上下文的（`某分类 · 搜索「山海经」· 3 条`），
+  点「清除」回到分类列表，而不是回到一个空壳。
+- **整张卡片可以 Tab 到达**，`Enter` / `Space` 打开；`Space` 不会顺带把页面滚一下。
+  卡片带可读标签，屏幕阅读器会念出这是什么。
+- **切换分类不闪空**。切换期间保留上一次的内容，不会先清空再加载 ——
+  实测断言的是切换过程中卡片数**从未掉到 0**。
+
+实测（`node scripts/reader-list-test.mjs`）：
+
+```
+after searching 「山海经」: … | … | …
+after 清除: 山海经其一 | 山海经其二 | 山海经其三
+回到分类列表: 3 cards, context bar gone
+Tab lands on a card: role=… outline=…
+Enter opened: 山海经其一
+switching category never dropped below N cards (last state: …)
+```
+
+「清除」那条断言的是**逐字相同**（`deepEqual` 和清除前的标题列表比），
+不是「看起来差不多」；搜索框同时被清空，上下文的提示条也一起消失。
+
+### 错误可以重试
+
+加载失败时错误条上同时给**「重试」和关闭按钮**：重试按**同一条命令**再发一次，
+不会换一个口径；关掉就真的关掉，文章页的 ✕ 以前是关不掉的。
+
+实测（`node scripts/reader-error-test.mjs`，看的是后端被调用的次数，不是界面文字）：
+
+```
+历史 retry: list_history 2 -> 3, rows back
+统计 retry: reading_stats 2 -> 3
+书架 retry: shelf_progress 2 -> 3
+文章 retry: load_article 2 -> 3, notice cleared
+✕ closes the article error
+```
+
+每种都是**同一条命令**再发一次（断言写的是 `after === before + 1`），
+不是换个口径重试。
+
+### 键盘可达
+
+侧栏源项、继续阅读、可用性徽章、卡片、历史行、书架行、划线行、清空历史入口等**十处**
+都能用键盘到达并操作，不用鼠标。
+
+**破坏性操作会先确认**：「清空历史」第一次点会取消，第二次才真的发 `clear_history`。
+
+实测（`node scripts/reader-nav-test.mjs`）：
+
+```
+Tab lands on 甲源 → Enter selected
+Space selected 乙源
+清空 cancelled: 0 calls, 3 rows untouched
+清空 confirmed: 1 call to clear_history
+```
+
+### 设置页
+
+- **保存失败会回滚**，不会留在一个「看起来保存了其实没存」的中间态；
+  后端拒绝时回滚的是**字段和仓库地址两处**。
+- **保存成功有提示**，而且提示会自己消失 —— 一直挂着的「已保存」比没有更吵。
+- **数字框可以清空重输**（不是只能按加号往上点）。
+- **范围校验在前后端都有**：输入越界时字段被夹回合法值，磁盘上的值不变；
+  但**后端自己的上限值仍然接受并保存**，不会因为「看起来太大」而吞掉合法配置。
+
+实测（`node scripts/reader-settings-test.mjs`）：
+
+```
+rolled back: field shows …, disk still has …
+the note disappeared on its own; disk has page_size=42
+cleared and retyped 42; stored=42
+range: … ; stored value stayed …, field shows …
+300 (the backend's own ceiling) is still accepted and stored
+```
+
 ## 视频播放
 
 `.m3u8` 是这类源最常见的视频格式,而 Chromium/WebView2 **原生不支持** —— 之前的播放器只能显示一句
@@ -274,6 +413,58 @@ pnpm test:reader    # Playwright 驱动真实浏览器
 > 不会膨胀到需要一键清空；逐条清除已经够用。
 
 - **缓冲反馈**：不再是转圈，而是「缓冲中… NN%」，用 `progress` 事件算已缓冲百分比，能继续播放时消失。
+
+### 快捷键
+
+不用鼠标也能看完一集：
+
+| 键 | 作用 |
+| --- | --- |
+| `空格` / `k` | 播放 / 暂停 |
+| `←` `→` | 后退 / 前进 10 秒 |
+| `↑` `↓` | 音量 ± |
+| `m` | 静音开关 |
+| `0`–`9` | 跳到该百分比位置 |
+| `f` | 全屏 |
+| `c` | 字幕开关 |
+| `Esc` | 交给浏览器（它仍然能退出全屏） |
+
+**焦点在输入框里时不触发快捷键。** 在划线备注里打一个 `7`，视频不会跳到 70%；
+这条很容易在别处被漏掉，所以单独测了。
+
+实测（`pnpm test:video-ux`，断言打在 `video.paused / currentTime / volume / muted` 上，不是文案）：
+
+```
+空格: paused false → true
+←:    currentTime 11.02 → 1.02
+clamps: →→ from 8s lands at 12.09s, ←← lands at 0.07s
+m:    muted false → true → false
+5:    currentTime → 6.05 of 12.1s
+f:    fullscreen false → true
+typing "a b" into the note field: value "a b", paused=false
+```
+
+### 字幕外观
+
+字号、位置（**底部 / 居中 / 顶部**）、底板样式都可在设置里调，并且**按源分别记住** ——
+一部片子的特大号字幕不会变成下一部的。
+
+> ### 字幕是播放器自己画的，不是浏览器画的
+>
+> 用 `<track mode="showing">` 的原生字幕渲染**做不到「字幕放顶部」**：`::cue` 几乎不接受任何几何属性，
+> 位置根本不是能设的东西。所以播放器把每条 track 设为 `hidden`（cue 照常解析，`activeCues` 照常可读），
+> 再用自己的覆盖层把当前那句画出来。
+>
+> **因此你在 DevTools 里看到 `<track>` 的 mode 是 `hidden`，这是正常的，不是 bug。**
+> 自绘换来的是位置、字号、底板都能真正生效。
+
+实测（`pnpm test:video-ux`）：
+
+```
+特大: fontSize=38px
+字幕位置: 0.12 / 0.39 / 0.67     ← 三档位置对应的实测偏移
+两个源各自记住: back on the first source: fontSize=22px
+```
 
 实测（`pnpm test:video-controls`）：
 
@@ -366,6 +557,55 @@ a standalone video gets neither a picker nor chapter buttons
   > `fetch` 会被拦。走的是后端的 `fetch_text`（复用引擎那套 User-Agent 和 cookie jar）。
 
 判定只看**链接路径和标题**，不看域名 —— 否则托管在 `music.x.com` 的源会把它的视频全判成音乐。
+
+### 音量记忆与断点续听
+
+每个源的音量**单独记住**（`serious.musicVolume.v1`）：在 A 源调到 30%，切到 B 源是另一档，
+回到 A 源还是 30%。
+
+听到一半的歌，下次打开会提示「已从 0:20 继续」，点一下才跳，不会直接把你甩出去。
+
+> ### 短于 10 秒的曲目永远不会被续播
+>
+> `RESUME_MIN_SECONDS = 10` 是故意的。「点开听了两秒就退出」和「听到一半还想继续」
+> 是两件不同的事；低于 10 秒去续播，只会把人莫名其妙地扔回一首刚开头、已经不想听的歌。
+>
+> 另一头也有规则：播放位置超过 **95%** 就算听完了，重新打开从头开始 ——
+> 否则一首听完的歌会被丢回音乐已经结束的那一秒。
+>
+> 两个阈值都在 `src/components/musicMemory.ts` 里，改它们之前先想清楚要牺牲哪一种体验。
+
+实测（`pnpm test:music-memory`）：
+
+```
+after setting 30%: serious.musicVolume.v1 = 0.3
+reopened after ~5s: 0 banner(s), started at 0.00s
+on reopening, the banner reads: "已从 0:20 继续"
+pressing play actually started it past 20.40s
+```
+
+### 播放队列
+
+队列可以**插播、删除、清空**。插播的一首会真的插到当前位置后面，
+所以点「下一首」落到的是插播的那首，不是原列表的下一首 —— 这条单独测过，
+因为「插播了但下一首还是照原顺序走」是很容易写出来又很难自己发现的 bug。
+
+### 歌词校准
+
+歌词和音频对不上时（源自己的时间戳不准），面板上可以微调：**粗调 ±50ms、精调 ±10ms**，
+**按源分别记住**（`serious.lyricOffset.v1`）。没有单独校准过的歌沿用它所属源的默认值。
+
+实测（`pnpm test:queue-lyrics`，同一时刻 t=4.40s）：
+
+```
+with no offset, t=4.40s highlights "第 12 行"
+at the same t=4.40s the highlight is now "第 10 行"
+localStorage serious.lyricOffset.v1 = { …track-1.lrc: 500 }
+a −10ms step should read 490 ms
+after a reload the calibration is still there
+```
+
+> 「细调」不是装饰：真实歌词的时间戳经常差几十毫秒，只有 10ms 一档才校得准。
 
 ### 睡眠定时与淡出
 
@@ -482,6 +722,31 @@ a track with no lyric file shows no panel
 - 设置页有「检查更新」按钮，可随时手动查询；
 - 下载过程显示进度条，进度通过 `update-progress` 事件推送。
 
+#### 两个实测过的坑（都不是产品缺陷）
+
+**更新端点必须是 HTTPS。** updater 插件在**启动时**就会检查配置，给一个 `http://` 的端点，
+应用直接起不来：
+
+```
+Failed to setup app: PluginInitialization("updater", "The configured updater endpoint
+must use a secure protocol like `https`")
+```
+
+想在本地拿一个假更新源做端到端验证（绕开 GitHub），必须让本地服务器说 TLS，
+并把自签证书放进**当前用户**的信任库 —— 不需要管理员权限。
+
+**`cargo build` 会把 exe 的完整性级别重置为 Low**，之后 WebView2 建窗失败：
+
+```
+failed to create webview: WebView2 error: WindowsError(HRESULT(0x8000FFFF), "灾难性故障")
+```
+
+看着像产品坏了，其实和更新、和代码都无关。**每次重新构建之后，跑测试前先把它设回去：**
+
+```powershell
+icacls src-tauri\target\release\serious.exe /setintegritylevel Medium
+```
+
 > 注意：自动更新功能依赖 `ring`（C 库）编译。Windows 需要可用的 Visual Studio Build Tools
 > 或 MinGW；macOS 需要 Xcode Command Line Tools。这只影响打包，普通使用不受影响。
 >
@@ -509,6 +774,7 @@ tag.a@href  .main@li            标签/类名选择器
 child.0  children  next  prev  parent   节点遍历
 $.model.data                   JSON 接口 + JSONPath
 $.model.data@all@title          数组展开后取字段
+$..model.title                  JSONPath 递归下降（任意层级同名字段）
 {{$.model.title}}              模板渲染
 {{$.model.time##T|.000.*## }}  `##` 正则替换运算符
 @js: / <js>…</js> / enableJs    JavaScript 规则（java.ajax、cache、Base64 等）
@@ -519,6 +785,21 @@ $.model.data@all@title          数组展开后取字段
 
 JS 沙箱提供 Legado 常用的 `java.ajax`、`cache.put/get`、`Base64`，并设有循环次数上限，
 避免坏规则卡死界面。
+
+### 关于 `$$`（一次统计引发的更正）
+
+合集里出现过「9 个源、49 处 `$$.`」的统计，据此有人推断客户端不支持**递归 JSONPath**。
+抓规则原文核对后，这个推断是错的，两件事被混在了一起：
+
+- **`$$` 不是路径，是 JavaScript。** 那 49 处全部位于 `<js>` 块内，形态是
+  `$$.match(/.*?《(.*?)》/)[1]`、`.map($$ => …)` —— `$$` 是 `.map()` 的回调参数或
+  正则运算的宿主变量。把它改写成 `$..` 不但救不了任何源，还会破坏这些脚本。
+- **递归 JSONPath 一直都支持**，标准写法 `$..字段` 可用（见上表 `$..model.title`），
+  集合里 `熊猫影院`、`十七找书`、`隐订阅` 等约 12 个源正是这么写的。
+
+尚未实现的是 Legado 的 **DOM 宿主对象**：`java.getElements` / `java.setContent` /
+`java.put` 等页面操作接口。那批蓝奏云盘源用到了这些，会在第一次调用时抛错 —— 真正的
+缺口在这里，不在 `$$`。
 
 对于**没有规则、只有网址**的源（合集里很常见），会自动把该页面的内容链接提取成可浏览的列表，
 而不是把整页文字塞成一条巨大的「文章」。

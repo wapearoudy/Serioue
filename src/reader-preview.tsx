@@ -9,9 +9,10 @@
 // browser; in the app the same commands go through Tauri IPC.
 
 import "./dev-tauri-stub";
-import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ReaderSettings, THEMES, applyReaderSettings } from "./components/ReaderSettings";
+import { TtsPanel, firstVisibleSentence, splitSentences, type SentenceRef } from "./components/TtsPanel";
 import type { ArticleItem, Settings } from "./api";
 import "./styles.css";
 
@@ -48,6 +49,14 @@ function Preview() {
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
   const [progress, setProgress] = useState(0);
   const [tocOpen, setTocOpen] = useState(false);
+  // 听书. Open by default so the panel is measurable without a click, and the
+  // watchdog interval is short so a stalled-utterance test does not have to wait
+  // ten seconds. The real component still defaults to ten.
+  const [ttsOpen, setTtsOpen] = useState(true);
+  const [ttsToken, setTtsToken] = useState(0);
+  /** The sentence on screen, so a fresh ▶ starts where the reader is looking. */
+  const [visibleStart, setVisibleStart] = useState(0);
+  const heartbeatMs = Number(new URLSearchParams(location.search).get("heartbeat")) || undefined;
   // Chapter 1 and 2 are marked read, chapter 3 is part-read: the contents has to
   // show the difference.
   const [readChapters] = useState<Record<string, number>>({
@@ -82,6 +91,12 @@ function Preview() {
     const el = e.currentTarget;
     const scrollable = el.scrollHeight - el.clientHeight;
     setProgress(scrollable <= 1 ? 0 : el.scrollTop / scrollable);
+    // A person moving the page stops the voice, exactly as the app does, and the
+    // next ▶ reads from what is now on screen.
+    if (!following.current) {
+      setTtsToken((t) => t + 1);
+      setVisibleStart(firstVisibleSentence(el));
+    }
     const next = chapters[chapter + 1];
     if (!next || declined.current === next.link) {
       setOfferNext(false);
@@ -89,6 +104,29 @@ function Preview() {
     }
     setOfferNext(scrollable - el.scrollTop < 160);
   };
+
+  // The sentences the preview reads, numbered exactly as they are rendered: one
+  // continuous run across the paragraphs, so the panel and the spans cannot
+  // drift apart.
+  const perParagraph = useMemo(() => PARAGRAPHS.map(splitSentences), []);
+  const sentences: SentenceRef[] = useMemo(() => {
+    const out: SentenceRef[] = [];
+    for (const parts of perParagraph) {
+      for (const text of parts) out.push({ index: out.length, text });
+    }
+    return out;
+  }, [perParagraph]);
+  /** Where each paragraph starts in that run. */
+  const offsets = useMemo(() => {
+    const out: number[] = [];
+    let at = 0;
+    for (const parts of perParagraph) {
+      out.push(at);
+      at += parts.length;
+    }
+    return out;
+  }, [perParagraph]);
+  const following = useRef(false);
 
   // Restore a remembered position on mount, the way the app does.
   useEffect(() => {
@@ -112,7 +150,27 @@ function Preview() {
               </button>
             )}
             <ReaderSettings settings={settings} onChange={change} />
+            <button className={ttsOpen ? "on" : ""} data-preview-action="tts" onClick={() => setTtsOpen((o) => !o)}>
+              听书
+            </button>
           </div>
+
+          {ttsOpen && (
+            <TtsPanel
+              // Remounting per chapter is the app's guarantee that the previous
+              // article's voice is cancelled.
+              key={current.link}
+              sentences={sentences}
+              positionToken={ttsToken}
+              startIndex={visibleStart}
+              heartbeatMs={heartbeatMs}
+              onFollow={() => {
+                following.current = true;
+                window.setTimeout(() => (following.current = false), 700);
+              }}
+              onClose={() => setTtsOpen(false)}
+            />
+          )}
 
           {tocOpen && chapters.length > 1 && (
             <div className="toc">
@@ -184,8 +242,14 @@ function Preview() {
                 {progress > 0.02 && ` · 已读 ${Math.round(progress * 100)}%`}
               </div>
               <div className={`reader-body${settings.reader_font === "serif" ? " serif" : ""}`}>
-                {PARAGRAPHS.map((p, i) => (
-                  <p key={i}>{p}</p>
+                {PARAGRAPHS.map((_p, i) => (
+                  <p key={i} data-paragraph={i}>
+                    {perParagraph[i].map((text, k) => (
+                      <span key={k} data-sentence-index={offsets[i] + k}>
+                        {text}
+                      </span>
+                    ))}
+                  </p>
                 ))}
               </div>
               <div className="chapter-nav">

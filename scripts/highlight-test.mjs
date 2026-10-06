@@ -197,7 +197,14 @@ try {
   console.log("  screenshot: test-results/highlight-panel.png");
 
   // -- deleting -------------------------------------------------------------
+  // Two steps now: the ✕ opens a confirmation, because a highlight can carry a
+  // note the listener wrote themselves and there is no undo on the backend.
   await page.locator(".mark-row button[aria-label^='删除划线']").first().click();
+  await page.waitForSelector("[data-delete-confirm]", { timeout: 5000 });
+  const warning = (await page.locator("[data-delete-message]").innerText()).trim();
+  assert.ok(warning.length > 0, "the confirmation says nothing about what is about to be lost");
+  console.log(`  the delete asks first: "${warning}"`);
+  await page.locator("[data-delete-yes]").click();
   await page.waitForFunction(
     () => document.querySelectorAll(".mark-row").length === 2,
     null,

@@ -1,0 +1,60 @@
+/* Styles for the article list.
+ *
+ * They live in their own file rather than in styles.css so the list can be
+ * changed without touching a stylesheet four other components share. Move them
+ * into the main sheet when the styles are next consolidated. */
+
+/* The line that says what is on screen while a search is in force. Without it a
+   search result list is indistinguishable from a category listing. */
+.list-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 18px 0;
+  padding: 7px 12px;
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.list-context button {
+  font-size: 12px;
+  padding: 3px 10px;
+}
+
+/* The previous category's list while the next one is loading: visible, so the
+   page does not flash empty, and dimmed, so it is not mistaken for the new
+   category's contents. */
+.grid[data-list-state="stale"] {
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+/* The engine's verdict on this page's rules.
+ *
+ * It sits above the scrolling body, outside `.grid`, and deliberately carries no
+ * hover or pressed state, because it is the one row here that cannot be opened —
+ * styling it like an article would invite exactly the click it cannot answer.
+ * The dashed left edge is what tells it apart at a glance from the cards below. */
+.list-diagnosis {
+  margin: 10px 18px 0;
+  padding: 9px 12px;
+  border: 1px dashed var(--warn);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+/* Cards are focusable, so the ring has to be visible without a stylesheet
+   change in the component; the inline outline is the primary one and this is a
+   second, matching cue for the mouse-free path. */
+.card[role="button"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}

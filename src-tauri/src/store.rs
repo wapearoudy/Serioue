@@ -158,6 +158,12 @@ pub struct Settings {
     pub cache_enabled: bool,
     #[serde(default)]
     pub repo_base: String,
+    /// Where this repository keeps its pages, when it differs from the
+    /// original layout. A mirror serving the same pages under different names
+    /// is described here rather than assumed: a hardcoded path leaves the
+    /// index looking fine while every download 404s.
+    #[serde(default)]
+    pub repo_paths: crate::repo::RepoPaths,
     #[serde(default)]
     pub user_agent: String,
     // --- Reader appearance -------------------------------------------------
@@ -249,6 +255,7 @@ impl Default for Settings {
             page_size: default_items(),
             cache_enabled: false,
             repo_base: "https://www.yck2026.fun".to_string(),
+            repo_paths: crate::repo::RepoPaths::default(),
             user_agent: String::new(),
             reader_font_size: default_font_size(),
             reader_line_height: default_line_height(),
@@ -641,6 +648,32 @@ impl Store {
         Ok(h)
     }
 
+    /// Attach, replace or clear the note on one highlight.
+    ///
+    /// `add_highlight` cannot serve this: it treats (article, passage) as the
+    /// identity and returns the stored row untouched, so re-saving the same
+    /// highlight would silently keep the old note. The only other write path is
+    /// `remove_highlight`, and that is exactly the data loss this command exists
+    /// to avoid -- a note edit must never cost the reader the highlight.
+    ///
+    /// An absent, empty or whitespace-only note clears it, so "clear the note"
+    /// and "the note is blank" cannot drift apart in the file.
+    pub fn update_highlight_note(&self, id: &str, note: Option<&str>) -> AppResult<()> {
+        let mut inner = self.inner.lock().map_err(|_| AppError::Storage("lock poisoned".into()))?;
+        let target = inner
+            .highlights
+            .iter_mut()
+            .find(|h| h.id == id)
+            .ok_or_else(|| AppError::Storage("找不到这条高亮".into()))?;
+        let cleaned = note.unwrap_or_default().trim().to_string();
+        if cleaned.chars().count() > 2000 {
+            return Err(AppError::Storage("笔记内容过长".into()));
+        }
+        target.note = cleaned;
+        self.write_atomic("highlights.json", &inner.highlights)?;
+        Ok(())
+    }
+
     pub fn remove_highlight(&self, id: &str) -> AppResult<()> {
         let mut inner = self.inner.lock().map_err(|_| AppError::Storage("lock poisoned".into()))?;
         inner.highlights.retain(|h| h.id != id);
@@ -983,6 +1016,43 @@ fn test_dir(tag: &str) -> PathBuf {
         let (store, dir) = temp_store();
         assert!(store.add_highlight(mark("https://x.com/a", "   ")).is_err());
         assert!(store.highlights().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_note_can_be_written_replaced_and_cleared_without_losing_the_highlight() {
+        let (store, dir) = temp_store();
+        let h = store.add_highlight(mark("https://x.com/a", "值得记的一句")).unwrap();
+
+        store.update_highlight_note(&h.id, Some("  第一版笔记  ")).unwrap();
+        let rows = store.highlights_for("https://x.com/a");
+        assert_eq!(rows.len(), 1, "editing a note must not add a row");
+        assert_eq!(rows[0].note, "第一版笔记", "surrounding whitespace should not be stored");
+
+        store.update_highlight_note(&h.id, Some("改过的笔记")).unwrap();
+        assert_eq!(store.highlights_for("https://x.com/a")[0].note, "改过的笔记");
+
+        // Both ways of saying "no note" have to land in the same place, or the
+        // file ends up with a note that is only whitespace.
+        store.update_highlight_note(&h.id, None).unwrap();
+        assert_eq!(store.highlights_for("https://x.com/a")[0].note, "");
+        store.update_highlight_note(&h.id, Some("   ")).unwrap();
+        assert_eq!(store.highlights_for("https://x.com/a")[0].note, "");
+        assert_eq!(store.highlights().len(), 1, "clearing a note must keep the highlight");
+
+        // Survives a restart: the note is on disk, not just in memory.
+        store.update_highlight_note(&h.id, Some("写完关机")).unwrap();
+        let reopened = Store::new(dir.clone()).unwrap();
+        assert_eq!(reopened.highlights()[0].note, "写完关机");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn editing_a_note_on_an_unknown_highlight_fails_loudly() {
+        // Silently succeeding here would let the UI claim a note was saved.
+        let (store, dir) = temp_store();
+        assert!(store.update_highlight_note("没有这条", Some("x")).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 

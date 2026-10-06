@@ -1,6 +1,6 @@
 [package]
 name = "serious"
-version = "0.1.2"
+version = "0.1.3"
 description = "Cross-platform desktop client for Legado source collections"
 authors = ["Serious"]
 edition = "2021"
@@ -8,7 +8,16 @@ rust-version = "1.82"
 
 [lib]
 name = "serious_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# `rlib` only. `staticlib`/`cdylib` are the Tauri *mobile* template defaults and
+# this app ships Windows and macOS desktops, which link the rlib.
+#
+# They are not merely unused here. A `cdylib` is rebuilt for every integration
+# test target under the same output filename, which collides with the rlib's,
+# and combined with `panic = "abort"` below that made `cargo test --release`
+# compile whole test targets against mismatched metadata: every target passed
+# on its own and the suite failed as a whole, with type errors that did not
+# exist in any single build.
+crate-type = ["rlib"]
 
 # Tauri serves the bundled frontend through a custom protocol in release
 # builds. Without this feature a release binary falls back to `devUrl` and

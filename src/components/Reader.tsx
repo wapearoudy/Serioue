@@ -6,6 +6,8 @@ import { VideoPlayer } from "./VideoPlayer";
 import { MusicPlayer, attachLyrics, extractAudio, isAudioUrl, type Track } from "./MusicPlayer";
 import { clearHighlights, paintHighlight } from "./highlight";
 import { ReaderSettings } from "./ReaderSettings";
+import { Sentences, TtsPanel, firstVisibleSentence, splitSentences, type SentenceRef } from "./TtsPanel";
+import { useKeyboardRows } from "./keyboardRow";
 import { Banner, Spinner } from "./ui";
 import type { ArticleResponse, Settings } from "../api";
 
@@ -13,6 +15,70 @@ import type { ArticleResponse, Settings } from "../api";
 function truncate(text: string, max: number): string {
   const clean = text.trim();
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
+/**
+ * Wrap every sentence in a rich page so it can be pointed at.
+ *
+ * The rich view is the source's own HTML, so the sentences cannot be marked up
+ * by React — they are found after the fact by walking text nodes. Each text node
+ * is split on its own: a sentence that straddles a `<strong>` becomes two
+ * fragments, which is inaudible and harmless, whereas trying to merge across
+ * elements would mean rebuilding the source's markup.
+ *
+ * Highlights still work afterwards — `<mark>` is drawn *inside* these spans, and
+ * `clearHighlights` only unwraps its own marks. The `data-sentences` flag makes
+ * the pass run once per page rather than once per state change, so re-painting
+ * highlights cannot produce spans inside spans.
+ *
+ * Returns the sentences in reading order, for the panel to speak.
+ */
+function markSentences(root: HTMLElement): SentenceRef[] {
+  if (root.dataset.sentences === "1") return sentencesFromDom(root);
+  const out: SentenceRef[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = (node as Text).parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      if (parent.closest("[data-sentence-index]")) return NodeFilter.FILTER_REJECT;
+      const tag = parent.tagName;
+      if (tag === "SCRIPT" || tag === "STYLE") return NodeFilter.FILTER_REJECT;
+      return node.nodeValue && node.nodeValue.trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes: Text[] = [];
+  let n = walker.nextNode();
+  while (n) {
+    nodes.push(n as Text);
+    n = walker.nextNode();
+  }
+
+  for (const node of nodes) {
+    const parts = splitSentences(node.nodeValue ?? "");
+    if (parts.length < 2) continue;
+    const frag = document.createDocumentFragment();
+    for (const part of parts) {
+      const span = document.createElement("span");
+      span.dataset.sentenceIndex = String(out.length);
+      span.textContent = part;
+      frag.appendChild(span);
+      out.push({ index: out.length, text: part });
+    }
+    node.parentNode?.replaceChild(frag, node);
+  }
+  root.dataset.sentences = "1";
+  return out;
+}
+
+/** Read the sentences back out of a page already marked up. */
+function sentencesFromDom(root: ParentNode): SentenceRef[] {
+  const out: SentenceRef[] = [];
+  root.querySelectorAll<HTMLElement>("[data-sentence-index]").forEach((el) => {
+    const index = Number(el.dataset.sentenceIndex);
+    if (!Number.isFinite(index)) return;
+    out.push({ index, text: el.textContent ?? "" });
+  });
+  return out.sort((a, b) => a.index - b.index);
 }
 
 type Props = {
@@ -33,6 +99,16 @@ type Props = {
   onOpenSibling?: (item: ArticleItem) => void;
   settings: Settings | null;
   onSettingsChange: (patch: Partial<Settings>) => void;
+  /**
+   * Dismiss the load error.
+   *
+   * Without it the notice had no close button at all (`Banner` only renders one
+   * when `onClose` is given) and stayed on screen until another article was
+   * opened.
+   */
+  onErrorClose?: () => void;
+  /** Re-issue the same article request. */
+  onRetry?: () => void;
   onBack: () => void;
   onOpenExternal: (url: string) => void;
 };
@@ -50,6 +126,8 @@ export function Reader({
   onOpenSibling,
   settings,
   onSettingsChange,
+  onErrorClose,
+  onRetry,
   onBack,
   onOpenExternal,
 }: Props) {
@@ -61,6 +139,16 @@ export function Reader({
   const [progress, setProgress] = useState(0);
   const restored = useRef<string | null>(null);
   const savedAt = useRef(0);
+  const keyboard = useKeyboardRows();
+
+  // -- 听书 ------------------------------------------------------------------
+  const [ttsOpen, setTtsOpen] = useState(false);
+  /** Bumped by a reader-initiated scroll; the panel stops and re-bases. */
+  const [ttsToken, setTtsToken] = useState(0);
+  /** The sentence on screen, so a fresh ▶ starts where the reader is looking. */
+  const [visibleStart, setVisibleStart] = useState(0);
+  /** Until when the reader's own scrolling is still driving the page. */
+  const followUntil = useRef(0);
 
   // -- highlights ------------------------------------------------------------
   // A highlight is the quoted passage, not a DOM offset: the page is fetched
@@ -229,6 +317,15 @@ export function Reader({
     return { rich, video, images, text, rendered, tracks: withLyrics, subtitles };
   }, [article, mode, itemKind]);
 
+  // Mark the sentences up before the highlights are painted, so a highlight ends
+  // up *inside* a sentence rather than the other way round.
+  const [richSentences, setRichSentences] = useState<SentenceRef[]>([]);
+  useEffect(() => {
+    const el = rich.current;
+    if (!el || !view) return;
+    setRichSentences(markSentences(el));
+  }, [view?.rich]);
+
   // Repaint whenever the DOM is replaced or the set of highlights changes.
   // Clearing first keeps a re-run from nesting marks inside marks.
   useEffect(() => {
@@ -292,6 +389,13 @@ export function Reader({
 
     const onScroll = () => {
       persist(false);
+      // Scrolling is the reader taking the page back from the voice. Our own
+      // follow-the-sentence scrolling has to be ignored, or the panel would
+      // stop itself on every sentence.
+      if (Date.now() > followUntil.current) {
+        setTtsToken((t) => t + 1);
+        setVisibleStart(firstVisibleSentence(body.current));
+      }
       // Near the end of a chapter, offer the next one.
       const el = body.current;
       if (!el || !nextChapter || declinedNext.current === nextChapter.link) {
@@ -329,6 +433,14 @@ export function Reader({
     return () => window.removeEventListener("keydown", onKey);
   }, [nextChapter, prevChapter, siblings.length, onOpenSibling]);
 
+  // What the voice reads: the plain-text view owns its sentences, while the rich
+  // view's come from the DOM pass above.
+  const ttsSentences: SentenceRef[] = useMemo(() => {
+    if (!view) return [];
+    if (view.rendered === "text") return splitSentences(view.text).map((text, index) => ({ index, text }));
+    return richSentences;
+  }, [view, richSentences]);
+
   return (
     <>
       <div className="main-head">
@@ -360,6 +472,19 @@ export function Reader({
           </div>
         )}
         <ReaderSettings settings={settings} onChange={onSettingsChange} />
+        {view && view.rendered !== "music" && view.rendered !== "video" && (
+          <button
+            className={ttsOpen ? "on" : ""}
+            data-reader-action="tts"
+            onClick={() => {
+              setVisibleStart(firstVisibleSentence(body.current));
+              setTtsOpen((o) => !o);
+            }}
+            title="逐句朗读正文"
+          >
+            听书
+          </button>
+        )}
         {siblings.length > 1 && (
           <button
             className={tocOpen ? "on" : ""}
@@ -390,14 +515,28 @@ export function Reader({
               const at = readChapters[item.link];
               const finished = at !== undefined && at >= 0.98;
               const started = at !== undefined && !finished;
+              const jump = () => {
+                setTocOpen(false);
+                onOpenSibling?.(item);
+              };
               return (
                 <li
                   key={`${item.link}-${i}`}
                   className={i === position ? "current" : ""}
-                  onClick={() => {
-                    setTocOpen(false);
-                    onOpenSibling?.(item);
-                  }}
+                  onClick={jump}
+                  // The only way to change chapter while reading. Without a tab
+                  // stop it was mouse-only, so a keyboard reader could not leave
+                  // a chapter they had finished.
+                  {...keyboard.propsFor(`toc:${item.link}`, jump, {
+                    label: `第 ${i + 1} 章 ${item.title || item.link}${
+                      finished
+                        ? "，已读"
+                        : started
+                          ? `，已读 ${Math.round((at ?? 0) * 100)}%`
+                          : ""
+                    }`,
+                  })}
+                  aria-current={i === position ? "true" : undefined}
                 >
                   <span className="toc-n">{i + 1}</span>
                   <span className={`toc-t${finished ? " read" : ""}`}>
@@ -439,8 +578,49 @@ export function Reader({
         </div>
       )}
 
+      {ttsOpen && ttsSentences.length > 0 && (
+        <TtsPanel
+          // Remounting on a new article is what guarantees the old article's
+          // voice is cancelled before the new one can start.
+          key={articleUrl || article?.final_url || "article"}
+          sentences={ttsSentences}
+          root={body.current ?? undefined}
+          positionToken={ttsToken}
+          startIndex={Math.min(visibleStart, ttsSentences.length - 1)}
+          onFollow={() => {
+            // Mark our own scrolling so the handler above does not read it as
+            // the reader taking the page back.
+            followUntil.current = Date.now() + 700;
+          }}
+          onClose={() => setTtsOpen(false)}
+        />
+      )}
+
       <div className="main-body reader-scroll" ref={body}>
-        {error && <Banner text={error} />}
+        {error && (
+          // This one used to be the worst notice in the app: no `onClose`, so
+          // the close button never rendered and a failed article left a red bar
+          // the reader could only clear by opening another article. It is now
+          // closable, and — because a source that just failed very often works
+          // on the second attempt — it can also re-issue the same request.
+          <Banner
+            text={error}
+            action={
+              onRetry ? (
+                <button
+                  className="primary"
+                  data-retry="article"
+                  aria-label="重新加载这篇文章"
+                  disabled={loading}
+                  onClick={onRetry}
+                >
+                  {loading ? "重新加载中…" : "重新加载"}
+                </button>
+              ) : undefined
+            }
+            onClose={onErrorClose}
+          />
+        )}
         {loading && (
           <div style={{ display: "flex", justifyContent: "center", padding: 60 }}>
             <Spinner />
@@ -535,7 +715,7 @@ export function Reader({
             {view.rendered === "text" && (
               <div>
                 {view.text ? (
-                  <p style={{ whiteSpace: "pre-wrap" }}>{view.text}</p>
+                  <Sentences text={view.text} />
                 ) : (
                   <p style={{ color: "var(--text-faint)" }}>这个页面没有可显示的文本内容。</p>
                 )}

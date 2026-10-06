@@ -9,6 +9,7 @@ import {
   type StageResult,
 } from "../api";
 import { Banner, Empty, Spinner, timeAgo } from "./ui";
+import { useKeyboardRows } from "./keyboardRow";
 
 type Row = { id: string; name: string; url: string; health: Health | null };
 
@@ -68,6 +69,8 @@ function duration(ms: number): string {
 export function VerifyPanel({ sources, selectedId, onSelect, onBack, onChecked }: Props) {
   const [rows, setRows] = useState<Row[]>(() => sources.map(toRow));
   const [expanded, setExpanded] = useState<string | null>(selectedId);
+  // Named `keyboard` rather than `rows`: `rows` is this panel's list of sources.
+  const keyboard = useKeyboardRows();
   const [scope, setScope] = useState<CheckScope>("all");
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
@@ -147,6 +150,14 @@ export function VerifyPanel({ sources, selectedId, onSelect, onBack, onChecked }
   }, [rows, onlyProblems]);
 
   const runRef = useRef(false);
+  /**
+   * The request that failed, so 重试 repeats that one.
+   *
+   * A verification failure is the most retryable error in the app — sources fail
+   * for network reasons all the time — but "run the batch" and "check this one
+   * source" are different requests, so the retry has to remember which.
+   */
+  const [retry, setRetry] = useState<(() => void) | null>(null);
   async function run() {
     if (runRef.current) return;
     runRef.current = true;
@@ -158,6 +169,7 @@ export function VerifyPanel({ sources, selectedId, onSelect, onBack, onChecked }
       onChecked();
     } catch (e) {
       setError(errorMessage(e));
+      setRetry(() => () => void run());
     } finally {
       setRunning(false);
       setProgress(null);
@@ -182,6 +194,7 @@ export function VerifyPanel({ sources, selectedId, onSelect, onBack, onChecked }
       onChecked();
     } catch (e) {
       setError(errorMessage(e));
+      setRetry(() => () => void verifyOne(id));
     }
   }
 
@@ -265,7 +278,33 @@ export function VerifyPanel({ sources, selectedId, onSelect, onBack, onChecked }
       )}
 
       <div className="main-body">
-        {error && <Banner text={error} onClose={() => setError(null)} />}
+        {error && (
+          <Banner
+            text={error}
+            action={
+              retry ? (
+                <button
+                  className="primary"
+                  data-retry="verify"
+                  aria-label="重试"
+                  disabled={running}
+                  onClick={() => {
+                    const again = retry;
+                    setRetry(null);
+                    setError(null);
+                    again();
+                  }}
+                >
+                  {running ? "重试中…" : "重试"}
+                </button>
+              ) : undefined
+            }
+            onClose={() => {
+              setError(null);
+              setRetry(null);
+            }}
+          />
+        )}
 
         {running && rows.length === 0 ? (
           <div style={{ display: "flex", justifyContent: "center", padding: 60 }}>
@@ -290,6 +329,17 @@ export function VerifyPanel({ sources, selectedId, onSelect, onBack, onChecked }
                   key={r.id}
                   className={`verify-row${open ? " open" : ""}`}
                   onClick={() => setExpanded(open ? null : r.id)}
+                  // Expands and collapses, so the state is announced as well as
+                  // drawn: Enter and Space both toggle it, and a screen reader is
+                  // told whether this row is open.
+                  {...keyboard.propsFor(
+                    `verify:${r.id}`,
+                    () => setExpanded(open ? null : r.id),
+                    {
+                      expanded: open,
+                      label: `${r.name || r.url}，${state === "ok" ? "可用" : state === "warn" ? "有疑问" : "不可用"}${open ? "，已展开" : ""}`,
+                    },
+                  )}
                 >
                   <div className="verify-line">
                     <span className={`verify-dot ${state}`} />

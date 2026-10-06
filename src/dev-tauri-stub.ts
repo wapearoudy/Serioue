@@ -177,7 +177,15 @@ const HANDLERS: Record<string, Handler> = {
     if (existing) return existing;
     const now = Math.floor(Date.now() / 1000);
     const newest = all.reduce((m: number, e) => Math.max(m, Number(e.created_at) || 0), 0);
-    const saved = { ...h, id: `h${now}-${all.length}`, text, created_at: Math.max(now, newest + 1) };
+    // The Rust store mints an id only when the caller did not supply one, so a
+    // record that is being put back (an undo) keeps its identity. Re-minting here
+    // would make this stub disagree with the packaged app on exactly that.
+    const saved = {
+      ...h,
+      id: h.id ? String(h.id) : `h${now}-${all.length}`,
+      text,
+      created_at: Math.max(now, newest + 1),
+    };
     all.push(saved);
     writeStore({ ...store, highlights: all });
     return saved;
@@ -187,6 +195,20 @@ const HANDLERS: Record<string, Handler> = {
     const all = ((store.highlights ?? []) as Array<Record<string, unknown>>).filter(
       (h) => h.id !== args.id,
     );
+    writeStore({ ...store, highlights: all });
+  },
+  update_highlight_note: (args) => {
+    // Mirrors `Store::update_highlight_note` exactly: unknown id is an error
+    // rather than a silent success, blank and null both mean "no note", and an
+    // over-long note is refused. A preview that disagreed with the packaged app
+    // here would make every note test meaningless.
+    const store = readStore();
+    const all = ((store.highlights ?? []) as Array<Record<string, unknown>>).slice();
+    const at = all.findIndex((h) => h.id === args.id);
+    if (at < 0) throw new Error("找不到这条划线");
+    const raw = args.note == null ? "" : String(args.note).trim();
+    if (raw.length > 2000) throw new Error("笔记过长");
+    all[at] = { ...all[at], note: raw };
     writeStore({ ...store, highlights: all });
   },
   get_progress: (args) => {

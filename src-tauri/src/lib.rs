@@ -76,6 +76,7 @@ pub fn run() {
             commands::highlights_for,
             commands::add_highlight,
             commands::remove_highlight,
+            commands::update_highlight_note,
             commands::fetch_text,
             commands::clear_history,
             commands::render_probe,

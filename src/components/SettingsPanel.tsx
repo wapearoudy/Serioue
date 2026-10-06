@@ -1,34 +1,130 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage, type Collection, type Settings } from "../api";
 import { UpdateSettings } from "./Update";
 import { Banner, Spinner, compactNumber } from "./ui";
 
+/**
+ * Bounds for 每页条数.
+ *
+ * These match the backend's own clamp in `validate_settings`
+ * (`page_size.clamp(10, 300)`), and they have to: a UI that accepted more than
+ * the backend keeps would let a person type 400, watch the save succeed, and
+ * then find the list still paging at 300 — a change nobody told them about.
+ * Refusing what the app cannot honour is the panel's job, and the real range is
+ * exactly what the app honours.
+ */
+const PAGE_MIN = 10;
+const PAGE_MAX = 300;
+
+/** How long a "已保存" confirmation stays on screen. */
+const SAVED_NOTE_MS = 2500;
+
 export function SettingsPanel({
   onSourcesChanged,
   onStatsChanged,
+  onClose,
 }: {
   onSourcesChanged: () => void;
   onStatsChanged: () => void;
+  /** Leave settings and go back to whatever was on screen before it. */
+  onClose: () => void;
 }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [dataDir, setDataDir] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  /** The operation that failed, so 重试 repeats that one. See RepoBrowser. */
+  const [retry, setRetry] = useState<(() => void) | null>(null);
+  /** What is really stored. The screen can be ahead of it while typing, and a
+   *  failed save has to be rolled back to *this*, not to whatever was on screen. */
+  const stored = useRef<Settings | null>(null);
+  /** The number field's own text, so it can be emptied and retyped. */
+  const [pageDraft, setPageDraft] = useState("");
+  /** Why a field was refused, next to the field rather than in a banner. */
+  const [fieldError, setFieldError] = useState<{ field: string; text: string } | null>(null);
 
-  useEffect(() => {
-    api.getSettings().then(setSettings).catch((e) => setError(errorMessage(e)));
-    api.listCollections().then(setCollections).catch((e) => setError(errorMessage(e)));
+  const load = useCallback(() => {
+    api
+      .getSettings()
+      .then((loaded) => {
+        // The loaded value is what a failed save has to roll back to, so it is
+        // recorded here — never mirrored from `settings`, which is updated
+        // optimistically as the user types and would make the rollback a no-op.
+        stored.current = loaded;
+        setSettings(loaded);
+        setPageDraft(String(loaded.page_size));
+      })
+      .catch((e) => {
+        setError(errorMessage(e));
+        setRetry(() => () => void load());
+      });
+    api.listCollections().then(setCollections).catch((e) => {
+      setError(errorMessage(e));
+      setRetry(() => () => void load());
+    });
     api.dataDir().then(setDataDir).catch(() => {});
   }, []);
 
-  async function save(next: Settings) {
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // A confirmation that never goes away is a second permanent notice.
+  useEffect(() => {
+    if (!note) return;
+    const id = window.setTimeout(() => setNote(null), SAVED_NOTE_MS);
+    return () => window.clearTimeout(id);
+  }, [note]);
+
+  /**
+   * Write, and make the screen agree with what was written.
+   *
+   * The order matters: the screen used to be updated first and never corrected,
+   * so a failed save left the user looking at a setting that was not stored and
+   * vanished on the next launch. Now a failure puts the stored value back and
+   * says so.
+   */
+  async function save(next: Settings, label = "设置") {
+    const previous = stored.current;
     setSettings(next);
     try {
       await api.setSettings(next);
+      stored.current = next;
+      setNote(`已保存${label}`);
     } catch (e) {
-      setError(errorMessage(e));
+      // Roll the screen back to what is really stored — if that is not known
+      // yet, re-read it rather than leave the failed value on screen.
+      if (previous) setSettings(previous);
+      if (previous) setPageDraft(String(previous.page_size));
+      setError(`保存失败，已恢复原值：${errorMessage(e)}`);
+      setRetry(() => () => void save(next, label));
     }
+  }
+
+  /** Validate the number field without substituting a value the user never typed. */
+  function commitPageSize(current: Settings) {
+    const raw = pageDraft.trim();
+    const value = Number(raw);
+    if (!raw || !Number.isFinite(value) || !Number.isInteger(value)) {
+      setFieldError({
+        field: "page_size",
+        text: `「每页条数」需要是一个整数，现在是「${raw || "空"}」，已经恢复成原来的 ${current.page_size}。`,
+      });
+      setPageDraft(String(current.page_size));
+      return;
+    }
+    if (value < PAGE_MIN || value > PAGE_MAX) {
+      setFieldError({
+        field: "page_size",
+        text: `每页条数要在 ${PAGE_MIN} 到 ${PAGE_MAX} 之间，现在填的是 ${value}，没有保存，已经恢复成原来的 ${current.page_size}。`,
+      });
+      setPageDraft(String(current.page_size));
+      return;
+    }
+    setFieldError(null);
+    if (value === current.page_size) return;
+    void save({ ...current, page_size: value }, `每页条数 ${value}`);
   }
 
   async function removeAll() {
@@ -62,19 +158,69 @@ export function SettingsPanel({
   return (
     <>
       <div className="main-head">
+        {/*
+          Every other panel — history, bookshelf, statistics, highlights, verify —
+          offers a way back in its header, and settings is no different: it
+          covers the whole reading area, so without this the reader has to know
+          that Escape works, or work out that the sidebar entry is a toggle. The
+          empty state further down already offers one, but someone who opened
+          settings with a list behind them never sees that far.
+        */}
+        <button className="ghost" onClick={onClose}>
+          ← 返回
+        </button>
         <div className="main-title">设置</div>
       </div>
       <div className="main-body">
         <div className="reader">
-          {error && <Banner text={error} onClose={() => setError(null)} />}
-          {note && <Banner text={note} onClose={() => setNote(null)} />}
+          {error && (
+            <div data-settings-error="1">
+              <Banner
+                text={error}
+                action={
+                  retry ? (
+                    <button
+                      className="primary"
+                      data-retry="settings"
+                      aria-label="重试"
+                      onClick={() => {
+                        const again = retry;
+                        setRetry(null);
+                        setError(null);
+                        again();
+                      }}
+                    >
+                      重试
+                    </button>
+                  ) : undefined
+                }
+                onClose={() => {
+                  setError(null);
+                  setRetry(null);
+                }}
+              />
+            </div>
+          )}
+          {/* A success note is not a failure and has nothing to retry. It fades
+              by itself so the page does not collect permanent confirmations. */}
+          {note && (
+            <div data-settings-note="1">
+              <Banner text={note} onClose={() => setNote(null)} />
+            </div>
+          )}
 
           <div className="field">
             <label>源仓库地址</label>
             <input
+              data-settings-field="repo_base"
               value={settings.repo_base}
               onChange={(e) => setSettings({ ...settings, repo_base: e.target.value })}
-              onBlur={() => save(settings)}
+              onBlur={() => {
+                // Only when it actually changed: saving on every blur would turn
+                // a click into a write and, with a broken disk, into an error.
+                if (settings.repo_base === stored.current?.repo_base) return;
+                void save({ ...settings, repo_base: settings.repo_base }, "仓库地址");
+              }}
             />
           </div>
 
@@ -82,14 +228,18 @@ export function SettingsPanel({
             <label>每页条数</label>
             <input
               type="number"
-              min={10}
-              max={500}
-              value={settings.page_size}
-              onChange={(e) =>
-                setSettings({ ...settings, page_size: Number(e.target.value) || 60 })
-              }
-              onBlur={() => save(settings)}
+              data-settings-field="page_size"
+              min={PAGE_MIN}
+              max={PAGE_MAX}
+              value={pageDraft}
+              onChange={(e) => setPageDraft(e.target.value)}
+              onBlur={() => commitPageSize(settings)}
             />
+            {fieldError?.field === "page_size" && (
+              <p data-settings-field-error="page_size" style={{ color: "var(--warn)", fontSize: 12, marginTop: 4 }}>
+                {fieldError.text}
+              </p>
+            )}
           </div>
 
           <div className="field">
@@ -98,7 +248,7 @@ export function SettingsPanel({
                 type="checkbox"
                 style={{ width: "auto", marginRight: 8 }}
                 checked={settings.concurrent_checks}
-                onChange={(e) => save({ ...settings, concurrent_checks: e.target.checked })}
+                onChange={(e) => void save({ ...settings, concurrent_checks: e.target.checked }, "并发检测")}
               />
               批量检测时并发请求
             </label>
@@ -110,7 +260,7 @@ export function SettingsPanel({
                 type="checkbox"
                 style={{ width: "auto", marginRight: 8 }}
                 checked={settings.render_js}
-                onChange={(e) => save({ ...settings, render_js: e.target.checked })}
+                onChange={(e) => void save({ ...settings, render_js: e.target.checked }, "渲染开关")}
               />
               用浏览器渲染脚本页面
             </label>

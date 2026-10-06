@@ -220,8 +220,10 @@ pub async fn repo_index(
     state: State<'_, AppState>,
     page: Option<u32>,
 ) -> AppResult<Vec<repo::RepoCollection>> {
-    let base = state.store.settings().repo_base;
-    blocking(move || repo::fetch_index(&base, page.unwrap_or(1))).await
+    let settings = state.store.settings();
+    let base = settings.repo_base;
+    let paths = settings.repo_paths;
+    blocking(move || repo::fetch_index_with(&base, page.unwrap_or(1), &paths)).await
 }
 
 // ---------------------------------------------------------------------------
@@ -359,8 +361,9 @@ pub async fn search_source(
             let url = browse::expand(&src.search_url.replace("{{keyWord}}", &keyword), 1);
             let url = crate::util::absolute_url(url.trim(), &src.source_url);
             let resp = crate::engine::fetch::fetch_ok(Some(src), &url)?;
-            let (items, next) = browse::parse_list(src, &resp.body, &resp.url);
-            return Ok(ArticlePage { items, next, final_url: resp.url });
+            let (items, next, shape) = browse::parse_list_detailed(src, &resp.body, &resp.url);
+            let diagnosis = browse::diagnose_list(shape);
+            return Ok(ArticlePage { items, next, final_url: resp.url, diagnosis });
         }
 
         // Fallback: a query on the source's own domain.
@@ -373,8 +376,9 @@ pub async fn search_source(
             .append_pair("wd", &keyword);
         let url = joined.to_string();
         let resp = crate::engine::fetch::fetch_ok(Some(src), &url)?;
-        let (items, next) = browse::parse_list(src, &resp.body, &resp.url);
-        Ok(ArticlePage { items, next, final_url: resp.url })
+        let (items, next, shape) = browse::parse_list_detailed(src, &resp.body, &resp.url);
+        let diagnosis = browse::diagnose_list(shape);
+        Ok(ArticlePage { items, next, final_url: resp.url, diagnosis })
     })
     .await
 }
@@ -627,6 +631,19 @@ pub async fn add_highlight(
 #[tauri::command]
 pub async fn remove_highlight(state: State<'_, AppState>, id: String) -> AppResult<()> {
     state.store.remove_highlight(&id)
+}
+
+/// Attach, replace or clear the note on a highlight, keeping the highlight.
+///
+/// A missing `note` clears it. This is separate from `add_highlight` on purpose:
+/// that one de-duplicates on (article, passage) and would hand back the old row.
+#[tauri::command]
+pub async fn update_highlight_note(
+    state: State<'_, AppState>,
+    id: String,
+    note: Option<String>,
+) -> AppResult<()> {
+    state.store.update_highlight_note(&id, note.as_deref())
 }
 
 /// How far through one shelved list the reader has got.

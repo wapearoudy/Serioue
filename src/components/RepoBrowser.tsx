@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, errorMessage, type RepoCollection } from "../api";
 import { Banner, Empty, Spinner, compactNumber } from "./ui";
+import { useDialogFocus } from "./focusTrap";
 
 type Props = {
   onClose: () => void;
@@ -15,6 +16,30 @@ export function RepoBrowser({ onClose, onImported }: Props) {
   const [done, setDone] = useState<string | null>(null);
   const [customUrl, setCustomUrl] = useState("");
   const [customBusy, setCustomBusy] = useState(false);
+  /** Bumped by 重试 to re-read the index of the page on screen. */
+  const [indexToken, setIndexToken] = useState(0);
+  /** The request that failed, so the retry repeats that one and not another. */
+  const [retry, setRetry] = useState<(() => void) | null>(null);
+  /**
+   * The repository the user configured.
+   *
+   * The placeholder used to name one hard-coded site, so anyone who had moved
+   * the repository to a mirror was still being taught an address that does not
+   * answer. It now follows the setting.
+   */
+  const [repoBase, setRepoBase] = useState("");
+  const dialog = useRef<HTMLDivElement>(null);
+
+  useDialogFocus(dialog, onClose);
+
+  useEffect(() => {
+    api
+      .repoBase()
+      .then((base) => setRepoBase(base))
+      .catch(() => {
+        /* the placeholder falls back to the generic shape below */
+      });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -25,12 +50,20 @@ export function RepoBrowser({ onClose, onImported }: Props) {
         if (!cancelled) setCols(c);
       })
       .catch((e) => {
-        if (!cancelled) setError(errorMessage(e));
+        if (cancelled) return;
+        setError(errorMessage(e));
+        // Whatever just failed is what 重试 will repeat. Guessing here would
+        // re-run the wrong request — importing a collection and listing the
+        // index are not interchangeable.
+        setRetry(() => () => {
+          setIndexToken((t) => t + 1);
+        });
       });
     return () => {
       cancelled = true;
     };
-  }, [page]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, indexToken]);
 
   async function importOne(c: RepoCollection) {
     setImporting(c.id);
@@ -41,6 +74,7 @@ export function RepoBrowser({ onClose, onImported }: Props) {
       onImported();
     } catch (err) {
       setError(errorMessage(err));
+      setRetry(() => () => void importOne(c));
     } finally {
       setImporting(null);
     }
@@ -58,6 +92,9 @@ export function RepoBrowser({ onClose, onImported }: Props) {
       onImported();
     } catch (err) {
       setError(errorMessage(err));
+      // Keep the address, so the retry re-issues the same import instead of
+      // making the reader paste it again.
+      setRetry(() => () => void importCustom());
     } finally {
       setCustomBusy(false);
     }
@@ -65,17 +102,56 @@ export function RepoBrowser({ onClose, onImported }: Props) {
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 860 }} onClick={(e) => e.stopPropagation()}>
-        <h3>从源仓库导入合集</h3>
+      <div
+        className="modal"
+        style={{ maxWidth: 860 }}
+        onClick={(e) => e.stopPropagation()}
+        ref={dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="repo-browser-title"
+        tabIndex={-1}
+        data-repo-dialog="1"
+      >
+        <h3 id="repo-browser-title">从源仓库导入合集</h3>
 
+        {/* A success note is not an error and has nothing to retry. */}
         {done && <Banner text={done} onClose={() => setDone(null)} />}
-        {error && <Banner text={error} onClose={() => setError(null)} />}
+        {error && (
+          <Banner
+            text={error}
+            action={
+              retry ? (
+                <button
+                  className="primary"
+                  data-retry="repo"
+                  aria-label="重试"
+                  onClick={() => {
+                    const again = retry;
+                    setRetry(null);
+                    setError(null);
+                    again();
+                  }}
+                >
+                  重试
+                </button>
+              ) : undefined
+            }
+            onClose={() => {
+              setError(null);
+              setRetry(null);
+            }}
+          />
+        )}
 
         <div className="field">
           <label>或直接粘贴 JSON 下载地址</label>
           <div style={{ display: "flex", gap: 8 }}>
             <input
-              placeholder="https://www.yck2026.fun/yuedu/rsss/json/id/203.json"
+              // Built from the configured repository, so the example is one the
+              // user can actually open. A generic shape is shown when the
+              // repository has not been read yet.
+              placeholder={`${repoBase || "https://你的源仓库"}/yuedu/rsss/json/id/203.json`}
               value={customUrl}
               onChange={(e) => setCustomUrl(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && importCustom()}
@@ -112,8 +188,20 @@ export function RepoBrowser({ onClose, onImported }: Props) {
                     >
                       {importing === c.id ? "导入中…" : "导入"}
                     </button>
-                    <a href={c.page_url} target="_blank" rel="noreferrer">
-                      <button title="在浏览器中查看">↗</button>
+                    <a
+                      href={c.page_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="在浏览器中查看这个合集"
+                      style={{
+                        alignSelf: "center",
+                        fontSize: 12,
+                        color: "var(--accent)",
+                        textDecoration: "none",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      在浏览器中查看 ↗
                     </a>
                   </div>
                 </div>

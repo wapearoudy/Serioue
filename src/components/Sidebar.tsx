@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage, type ContinueEntry, type SourceSummary } from "../api";
 import { compactNumber, timeAgo } from "./ui";
+import { useKeyboardRows } from "./keyboardRow";
 
 type Props = {
   sources: SourceSummary[];
@@ -32,6 +33,9 @@ type Props = {
 export function Sidebar(props: Props) {
   const [query, setQuery] = useState("");
   const [reading, setReading] = useState<ContinueEntry[]>([]);
+  /** Set when the 继续阅读 shelf could not be read; see below. */
+  const [continueFailed, setContinueFailed] = useState(false);
+  const rows = useKeyboardRows();
 
   // Re-fetch whenever the parent reports that progress moved.
   useEffect(() => {
@@ -39,10 +43,16 @@ export function Sidebar(props: Props) {
     api
       .continueReading()
       .then((list) => {
-        if (!cancelled) setReading(list);
+        if (cancelled) return;
+        setReading(list);
+        setContinueFailed(false);
       })
       .catch(() => {
-        /* the shelf is a convenience; failing to load it must not break the app */
+        /* Degrading quietly is right — the shelf is a convenience, not the app.
+           Staying silent is not: with no shelf and no explanation, the reader
+           concludes their progress is gone. So the shelf disappears and a quiet
+           line says why; the progress itself is untouched. */
+        if (!cancelled) setContinueFailed(true);
       });
     return () => {
       cancelled = true;
@@ -151,6 +161,23 @@ export function Sidebar(props: Props) {
       </div>
 
       <div className="sidebar-body">
+        {continueFailed && (
+          // Inline rather than in the shared stylesheet: this round is not
+          // allowed to touch styles.css, and a stylesheet rule that never loads
+          // is worse than one long line here.
+          <div
+            className="continue-note"
+            data-sidebar-note="continue-failed"
+            style={{
+              color: "var(--text-faint)",
+              fontSize: 12,
+              lineHeight: 1.7,
+              padding: "6px 8px 2px",
+            }}
+          >
+            继续阅读暂时读不出来（多半是源又在抽风），阅读进度没有丢，进度在「历史」里。
+          </div>
+        )}
         {reading.length > 0 && (
           <div className="continue">
             <div className="continue-head">继续阅读</div>
@@ -159,6 +186,9 @@ export function Sidebar(props: Props) {
                 key={entry.url}
                 className="continue-row"
                 onClick={() => props.onContinue?.(entry)}
+                {...rows.propsFor(`continue:${entry.url}`, () => props.onContinue?.(entry), {
+                  label: `继续阅读 ${entry.title || entry.url}，已读 ${Math.round(entry.progress * 100)}%`,
+                })}
                 title={`${entry.title}\n${entry.source_name}`}
               >
                 <div className="continue-title">{entry.title || entry.url}</div>
@@ -191,6 +221,12 @@ export function Sidebar(props: Props) {
                     s.enabled ? "" : " disabled"
                   }`}
                   onClick={() => props.onSelect(s.id)}
+                  // The main navigation of the app: without a tab stop and a
+                  // role, a keyboard user cannot change source at all.
+                  {...rows.propsFor(`src:${s.id}`, () => props.onSelect(s.id), {
+                    label: `${s.name || s.url}${s.enabled ? "" : "（已停用）"}`,
+                  })}
+                  aria-current={s.id === props.selectedId ? "true" : undefined}
                   title={`${s.name}\n${s.url}${s.health ? `\n${s.health.status}` : ""}`}
                 >
                   <span
@@ -219,10 +255,16 @@ export function Sidebar(props: Props) {
         </button>
         <span className="spacer" />
         {props.stats && props.stats.checked > 0 && (
+          // This was a `<span>` with `cursor: pointer` and nothing else: not
+          // focusable, no role, no way to reach it from the keyboard. It now
+          // behaves like the button it looks like.
           <span
+            {...rows.propsFor("foot:available", () => props.onOpenVerify(), {
+              label: `已检测源中 ${props.stats?.working} / ${props.stats?.checked} 可用，打开校验详情`,
+            })}
+            style={{ cursor: "pointer", ...rows.ring }}
             title="已检测源中可用的数量"
-            onClick={props.onOpenVerify}
-            style={{ cursor: "pointer" }}
+            data-sidebar-action="available"
           >
             {props.stats.working}/{props.stats.checked} 可用
           </span>

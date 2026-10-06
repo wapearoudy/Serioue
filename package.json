@@ -1,6 +1,6 @@
 {
   "name": "serious",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Cross-platform desktop client for Legado source collections",
   "private": true,
   "type": "module",
@@ -20,6 +20,11 @@
     "test:shelf": "node scripts/shelf-test.mjs",
     "test:reader-stats": "node scripts/reader-stats-test.mjs",
     "test:highlight": "node scripts/highlight-test.mjs",
+    "test:marks-panel": "node scripts/marks-panel-test.mjs",
+    "test:app-error": "node scripts/reader-app-error-test.mjs",
+    "test:music-stability": "node scripts/music-stability-test.mjs",
+    "test:reader-diagnosis": "node scripts/reader-diagnosis-test.mjs",
+    "test:reader-return": "node scripts/reader-return-test.mjs",
     "demo:video": "node scripts/make-demo-video.mjs",
     "test:video": "node scripts/video-test.mjs",
     "test:episodes": "node scripts/episode-test.mjs",
@@ -35,7 +40,9 @@
     "test:nav": "node scripts/reader-nav-test.mjs",
     "test:gallery": "node scripts/gallery-test.mjs",
     "test:settings": "node scripts/reader-settings-test.mjs",
-    "test:modal": "node scripts/reader-modal-test.mjs"
+    "test:modal": "node scripts/reader-modal-test.mjs",
+    "test:music-failfast": "node scripts/music-failfast-test.mjs",
+    "test:signature-accept": "node scripts/update-signature-accept-test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

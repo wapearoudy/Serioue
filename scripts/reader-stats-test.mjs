@@ -53,13 +53,19 @@ function at(days, hour, minute = 0) {
 }
 
 /**
- * Whether yesterday already belongs to a different week.
+ * Whether an article opened `days` ago falls outside the week that began most
+ * recently on Monday.
  *
- * The app counts weeks from Monday, so on a Monday "yesterday" is last week.
- * The fixture uses yesterday, and this keeps the expectations honest rather
- * than quietly skipping the assertion that day.
+ * The app counts weeks from Monday, so Sunday closes a week rather than opening
+ * one. That makes *yesterday* leave the week on a Monday, and the night before
+ * yesterday leave it on a Tuesday — the fixture uses both, and special-casing
+ * only the first one produced an expectation that was wrong for six days out of
+ * seven while still passing on one.
+ *
+ * Derived from the calendar rather than hard-coded, so the assertions below hold
+ * on whatever day this happens to run.
  */
-const yesterdayIsLastWeek = new Date().getDay() === 1;
+const outsideThisWeek = (days) => (new Date().getDay() - days + 7) % 7 === 0;
 
 /** Write a fixture into the stub's localStorage-backed store. */
 async function seed({ history, progress, progress_at }) {
@@ -175,11 +181,11 @@ try {
   assert.match(today.text, /^今日 3 篇 45 分钟/, `today card reads "${today.text}"`);
   console.log(`  today: ${today.text}`);
 
-  // Today's three articles and the two older ones are the whole week, except
-  // that yesterday falls out of it on a Monday.
+  // Today's three articles are always in the week. Yesterday and the night before
+  // yesterday are in it only while they have not reached a Sunday.
   const week = await card("week");
-  const weekArticles = yesterdayIsLastWeek ? 3 : 5;
-  const weekMinutes = yesterdayIsLastWeek ? 45 : 95;
+  const weekArticles = 3 + (outsideThisWeek(1) ? 0 : 1) + (outsideThisWeek(2) ? 0 : 1);
+  const weekMinutes = 45 + (outsideThisWeek(1) ? 0 : 20) + (outsideThisWeek(2) ? 0 : 30);
   assert.equal(
     week.articles,
     weekArticles,
@@ -190,7 +196,11 @@ try {
     weekMinutes,
     `this week's minutes are wrong (${weekMinutes} expected): ${JSON.stringify(week)}`,
   );
-  console.log(`  week: ${week.text}`);
+  console.log(
+    `  week: ${week.text} (today is ${new Date().getDay()}, so yesterday=${
+      outsideThisWeek(1) ? "out" : "in"
+    } and the night before=${outsideThisWeek(2) ? "out" : "in"})`,
+  );
 
   const all = await card("all");
   assert.equal(all.articles, 5, `all-time articles are wrong: ${JSON.stringify(all)}`);
@@ -222,8 +232,8 @@ try {
   assert.equal(onlyYesterday.minutes, 0, "yesterday's minutes were counted as today's");
   assert.match(onlyYesterday.text, /不到 1 分钟/, `zero minutes read oddly: ${onlyYesterday.text}`);
   const yesterdayWeek = await card("week");
-  assert.equal(yesterdayWeek.articles, yesterdayIsLastWeek ? 0 : 1);
-  assert.equal(yesterdayWeek.minutes, yesterdayIsLastWeek ? 0 : 20);
+  assert.equal(yesterdayWeek.articles, outsideThisWeek(1) ? 0 : 1);
+  assert.equal(yesterdayWeek.minutes, outsideThisWeek(1) ? 0 : 20);
   console.log(`  only yesterday: today "${onlyYesterday.text}" · week "${yesterdayWeek.text}"`);
 
   // -- across midnight -------------------------------------------------------

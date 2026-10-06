@@ -61,6 +61,14 @@ export interface ArticlePage {
   items: ArticleItem[];
   next: string | null;
   final_url: string;
+  /**
+   * A sentence in plain Chinese explaining that this source's rules no longer
+   * match the site, when the engine had to fall back to the page's raw links.
+   *
+   * Optional because the backend only sends it when it has something to say —
+   * an absent field means the rules worked, not that the field was lost.
+   */
+  diagnosis?: string | null;
 }
 
 export interface ArticleResponse {
@@ -351,6 +359,17 @@ export const api = {
   addHighlight: (h: Highlight) => invoke<Highlight>("add_highlight", { highlight: h }),
 
   removeHighlight: (id: string) => invoke<void>("remove_highlight", { id }),
+
+  /**
+   * Save or clear the note on one highlight.
+   *
+   * A dedicated command, not `addHighlight`: highlighting the same passage twice
+   * is de-duplicated by (article, text) and returns the stored record untouched,
+   * so re-adding with a new note would silently restore the old one. `null` means
+   * "no note" — the highlight itself stays.
+   */
+  updateHighlightNote: (id: string, note: string | null) =>
+    invoke<void>("update_highlight_note", { id, note }),
 
   /** Articles started but not finished, newest first. */
   continueReading: () => invoke<ContinueEntry[]>("continue_reading"),

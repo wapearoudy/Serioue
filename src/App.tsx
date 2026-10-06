@@ -31,10 +31,71 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [view, setView] = useState<View>({ kind: "list" });
+  /**
+   * Where a panel should go back to.
+   *
+   * Opening 划线 or 设置 from the sidebar while reading dropped the reader on
+   * the list afterwards, so "look at one thing, then carry on reading" — the
+   * reason they opened it — cost them a re-open of the article. One slot is
+   * enough: the panels are siblings, not a tree.
+   */
+  const [panelReturn, setPanelReturn] = useState<View | null>(null);
+  /**
+   * Where the reader was in each source's list.
+   *
+   * The list unmounts while an article is open, so the category and the scroll
+   * offset had nowhere to live, and every return started again at the first
+   * category scrolled to the top.
+   */
+  const [listSession, setListSession] = useState<Record<string, { catIndex: number; scrollTop: number }>>({});
+  const session = selectedId ? listSession[selectedId] : undefined;
+
+  // Stable identities matter here: the list reports its category and scroll
+  // position through these, and an inline arrow would change identity on every
+  // render, re-running the list's effects, which write back — a render loop
+  // that pegs the main thread rather than anything visible going wrong.
+  const rememberCategory = useCallback((index: number) => {
+    if (!selectedId) return;
+    setListSession((prev) => {
+      const cur = prev[selectedId];
+      if (cur && cur.catIndex === index) return prev;
+      return { ...prev, [selectedId]: { catIndex: index, scrollTop: cur?.scrollTop ?? 0 } };
+    });
+  }, [selectedId]);
+
+  const rememberScroll = useCallback((top: number) => {
+    if (!selectedId) return;
+    setListSession((prev) => {
+      const cur = prev[selectedId];
+      if (cur && cur.scrollTop === top) return prev;
+      return { ...prev, [selectedId]: { catIndex: cur?.catIndex ?? 0, scrollTop: top } };
+    });
+  }, [selectedId]);
   const [showRepo, setShowRepo] = useState(false);
   const [onlyFavorites, setOnlyFavorites] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * The app-level failure, with the request that caused it.
+   *
+   * This used to be a bare string, so every failure here produced a banner with
+   * nothing but a close button: the app knew exactly what had failed and what
+   * would fix it, and showed the reader neither. Carrying the retry alongside the
+   * message is what lets each throw site say what to do about itself — 「重试」
+   * means one specific request, not "try the app again".
+   */
+  const [error, setError] = useState<{ text: string; retry?: () => void } | null>(null);
   const [bootBusy, setBootBusy] = useState(true);
+
+  /** Report a failure together with the one action that can undo it. */
+  const failWith = useCallback((e: unknown, retry?: () => void) => {
+    setError({ text: errorMessage(e), retry });
+  }, []);
+  /** A retry that first clears the banner, so it does not sit there mid-flight. */
+  const retryThen = useCallback((retry: () => void) => {
+    return () => {
+      setError(null);
+      retry();
+    };
+  }, []);
 
   // Reader state
   const [article, setArticle] = useState<ArticleResponse | null>(null);
@@ -53,15 +114,18 @@ export default function App() {
 
   // Reader preferences drive CSS variables and the reading theme, so they are
   // loaded once at startup rather than when the reader first opens.
-  useEffect(() => {
+  const loadSettings = useCallback(() => {
     api
       .getSettings()
       .then((s) => {
         setSettings(s);
         applyReaderSettings(s);
       })
-      .catch((e) => setError(errorMessage(e)));
-  }, []);
+      .catch((e) => failWith(e, retryThen(loadSettings)));
+  }, [failWith, retryThen]);
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
 
   const changeSettings = useCallback((patch: Partial<Settings>) => {
     setSettings((prev) => {
@@ -116,23 +180,50 @@ export default function App() {
 
   const refreshSources = useCallback(async () => {
     try {
-      const [s, st] = await Promise.all([api.listSources(), api.stats()]);
-      setSources(s);
-      setStats(st);
-      // Auto-select the first source on first load.
-      setSelectedId((cur) => cur ?? (s.length > 0 ? s[0].id : null));
+      // Settled separately on purpose. `Promise.all` throws away a source list
+      // that arrived perfectly well just because the sidebar's counts did not,
+      // and the result is an app that looks empty over a number the reader never
+      // asked for. Each half is worth showing on its own merits, and whichever
+      // half failed still says so, with its own retry.
+      const [listResult, statsResult] = await Promise.allSettled([
+        api.listSources(),
+        api.stats(),
+      ]);
+      if (listResult.status === "fulfilled") {
+        const s = listResult.value;
+        setSources(s);
+        // Auto-select the first source on first load.
+        setSelectedId((cur) => cur ?? (s.length > 0 ? s[0].id : null));
+      }
+      if (statsResult.status === "fulfilled") setStats(statsResult.value);
+      if (listResult.status === "rejected") {
+        failWith(listResult.reason, retryThen(refreshSources));
+      } else if (statsResult.status === "rejected") {
+        // Only one message fits in the banner, and the retry re-issues both, so
+        // naming whichever failed first is not hiding anything actionable.
+        failWith(statsResult.reason, retryThen(refreshSources));
+      }
     } catch (e) {
-      setError(errorMessage(e));
+      // Reachable only if something above throws rather than rejects.
+      failWith(e, retryThen(refreshSources));
     } finally {
       setBootBusy(false);
     }
-  }, []);
+  }, [failWith, retryThen]);
 
   useEffect(() => {
     refreshSources();
   }, [refreshSources]);
 
   // Load categories whenever the selection changes.
+  const loadCategories = useCallback((id: string) => {
+    return () => {
+      api
+        .categories(id)
+        .then((res) => setCategories(res.categories))
+        .catch((e) => failWith(e, retryThen(loadCategories(id))));
+    };
+  }, [failWith, retryThen]);
   useEffect(() => {
     if (!selectedId) {
       setCategories([]);
@@ -145,12 +236,12 @@ export default function App() {
         if (!cancelled) setCategories(res.categories);
       })
       .catch((e) => {
-        if (!cancelled) setError(errorMessage(e));
+        if (!cancelled) failWith(e, retryThen(loadCategories(selectedId)));
       });
     return () => {
       cancelled = true;
     };
-  }, [selectedId]);
+  }, [selectedId, failWith, loadCategories, retryThen]);
 
   /**
    * Make a source current and show its listing.
@@ -166,10 +257,58 @@ export default function App() {
     siblingsSeq.current += 1;
     setSelectedId(id);
     setView({ kind: "list" });
+    setPanelReturn(null);
     setArticle(null);
     setSiblings([]);
     setProgressToken((t) => t + 1);
   }
+
+  /** Open a panel, remembering the reader if that is where they were. */
+  function openPanel(next: View) {
+    setPanelReturn((prev) => (view.kind === "reader" ? view : prev));
+    setView(next);
+  }
+
+  /** Close a panel: back to the reader if it came from one, else to the list. */
+  function closePanel() {
+    setView((current) => {
+      void current;
+      return panelReturn ?? { kind: "list" };
+    });
+    setPanelReturn(null);
+  }
+
+  /** Leave the reader. Also the moment a new reading position exists. */
+  function leaveReader() {
+    setView({ kind: "list" });
+    setProgressToken((t) => t + 1);
+  }
+
+  /**
+   * One 「返回」 for the keyboard and the button.
+   *
+   * Escape is what people press when a screen is in the way, and in a desktop
+   * app pressing it on the main screens doing nothing reads as the app being
+   * stuck. Two places keep their own Escape and are left alone: the reader's
+   * settings popover (it closes itself) and the video player (Escape is its
+   * fullscreen key by design).
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const target = e.target as Element | null;
+      if (target?.closest(".reader-settings, .player-wrap")) return;
+      if (panelReturn) {
+        closePanel();
+      } else if (view.kind === "reader") {
+        leaveReader();
+      }
+      // On the list there is nothing above it, so Escape deliberately does
+      // nothing rather than pretending.
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [view.kind, panelReturn]);
 
   /**
    * Load a source's listing so the reader has a table of contents for it.
@@ -216,26 +355,50 @@ export default function App() {
     }
   }
 
+  /**
+   * Open an article that belongs to some source, not necessarily the selected one.
+   *
+   * History, the bookshelf, 「继续阅读」 and a highlight all point at a stored
+   * source, so they cannot go through `openArticle` — that one reads `selectedId`,
+   * which is still the *previous* source at the moment they run.
+   *
+   * The view is switched **before** the fetch, which is the whole point: a failure
+   * used to leave the reader sitting on the panel it was opened from, with only an
+   * app-level banner offering a close button. Opening first means the reader's own
+   * error — and the 「重试」 that comes with it — is on screen, which is where the
+   * reader already is looking.
+   */
+  const openArticleOf = useCallback(
+    (sourceId: string, item: ArticleItem, kind: string) => {
+      const seq = ++articleSeq.current;
+      selectSource(sourceId);
+      setView({ kind: "reader", item });
+      setArticleKind(kind || item.kind);
+      setArticleLoading(true);
+      setArticleError(null);
+      setArticle(null);
+      void loadSiblingsFor(sourceId);
+      api
+        .loadArticle(sourceId, item.link, item.title)
+        .then((res) => {
+          if (seq === articleSeq.current) setArticle(res);
+        })
+        .catch((e) => {
+          if (seq === articleSeq.current) setArticleError(errorMessage(e));
+        })
+        .finally(() => {
+          if (seq === articleSeq.current) setArticleLoading(false);
+        });
+    },
+    [selectSource, loadSiblingsFor],
+  );
+
   function openHistoryEntry(entry: HistoryEntry) {
-    const seq = ++articleSeq.current;
-    setView({ kind: "reader", item: { title: entry.title, link: entry.url, image: "", date: "", kind: "article" } });
-    setArticleKind("article");
-    setArticleLoading(true);
-    setArticleError(null);
-    setArticle(null);
-    void loadSiblingsFor(entry.source_id);
-    // History rows may belong to a source that is no longer selected.
-    api
-      .loadArticle(entry.source_id, entry.url, entry.title)
-      .then((res) => {
-        if (seq === articleSeq.current) setArticle(res);
-      })
-      .catch((e) => {
-        if (seq === articleSeq.current) setArticleError(errorMessage(e));
-      })
-      .finally(() => {
-        if (seq === articleSeq.current) setArticleLoading(false);
-      });
+    openArticleOf(
+      entry.source_id,
+      { title: entry.title, link: entry.url, image: "", date: "", kind: "article" },
+      "article",
+    );
   }
 
   const selected = sources.find((s) => s.id === selectedId) ?? null;
@@ -245,6 +408,11 @@ export default function App() {
     (sourceId: string, sourceName: string, categoryName: string, first?: ArticleItem) => {
       const id = shelfId(sourceId, categoryName);
       const saved = shelf.some((e) => e.id === id);
+      // The retry re-runs the whole toggle, so it reads `shelf` at that moment
+      // rather than the one captured here — after a failed write nothing changed,
+      // but re-deciding is what keeps a second failure from inverting the action.
+      const write = () =>
+        toggleShelf(sourceId, sourceName, categoryName, first);
       const done = saved
         ? api.removeShelf(id)
         : api.addShelf({
@@ -259,39 +427,26 @@ export default function App() {
             kind: first?.kind ?? "",
             added_at: 0,
           });
-      done.then(refreshShelf).catch((e) => setError(errorMessage(e)));
+      done.then(refreshShelf).catch((e) => failWith(e, retryThen(write)));
     },
-    [shelf, refreshShelf],
+    [shelf, refreshShelf, failWith, retryThen],
   );
 
   /** Open a shelf entry: switch source, then open the stored item. */
   const openShelfEntry = useCallback(
     (entry: ShelfEntry) => {
-      selectSource(entry.source_id);
-      void loadSiblingsFor(entry.source_id);
       if (!entry.url) {
+        selectSource(entry.source_id);
         setView({ kind: "list" });
         return;
       }
-      void api
-        .loadArticle(entry.source_id, entry.url, entry.title)
-        .then((res) => {
-          setArticleKind(entry.kind || "article");
-          setArticle(res);
-          setView({
-            kind: "reader",
-            item: {
-              title: entry.title,
-              link: entry.url,
-              image: "",
-              date: "",
-              kind: entry.kind || "article",
-            },
-          });
-        })
-        .catch((e) => setError(errorMessage(e)));
+      openArticleOf(
+        entry.source_id,
+        { title: entry.title, link: entry.url, image: "", date: "", kind: entry.kind || "article" },
+        entry.kind || "article",
+      );
     },
-    [],
+    [openArticleOf, selectSource],
   );
 
   return (
@@ -302,14 +457,14 @@ export default function App() {
         onSelect={selectSource}
         onChanged={refreshSources}
         onOpenRepo={() => setShowRepo(true)}
-        onOpenHistory={() => setView({ kind: "history" })}
-        onOpenShelf={() => setView({ kind: "shelf" })}
-        onOpenStats={() => setView({ kind: "stats" })}
+        onOpenHistory={() => openPanel({ kind: "history" })}
+        onOpenShelf={() => openPanel({ kind: "shelf" })}
+        onOpenStats={() => openPanel({ kind: "stats" })}
         shelfCount={shelf.length}
-        onOpenHighlights={() => setView({ kind: "highlights" })}
+        onOpenHighlights={() => openPanel({ kind: "highlights" })}
         highlightCount={highlightCount}
-        onOpenVerify={() => setView({ kind: "verify" })}
-        onOpenSettings={() => setView({ kind: "settings" })}
+        onOpenVerify={() => openPanel({ kind: "verify" })}
+        onOpenSettings={() => openPanel({ kind: "settings" })}
         stats={stats}
         filterOnlyFavorites={onlyFavorites}
         onToggleFilter={setOnlyFavorites}
@@ -317,25 +472,29 @@ export default function App() {
         onContinue={(entry) => {
           // Resuming an article means switching to its source first, so the
           // category tabs and contents come from the right place.
-          selectSource(entry.source_id);
-          void loadSiblingsFor(entry.source_id);
-          void api
-            .loadArticle(entry.source_id, entry.url, entry.title)
-            .then((res) => {
-              setArticleKind("article");
-              setArticle(res);
-              setView({
-                kind: "reader",
-                item: { title: entry.title, link: entry.url, image: "", date: "", kind: "article" },
-              });
-            })
-            .catch((e) => setError(errorMessage(e)));
+          openArticleOf(
+            entry.source_id,
+            { title: entry.title, link: entry.url, image: "", date: "", kind: "article" },
+            "article",
+          );
         }}
         busy={bootBusy}
       />
 
       <main className="main">
-        {error && <Banner text={error} onClose={() => setError(null)} />}
+        {error && (
+          <Banner
+            text={error.text}
+            action={
+              error.retry ? (
+                <button className="primary" data-retry="app" onClick={error.retry} aria-label="重试">
+                  重试
+                </button>
+              ) : undefined
+            }
+            onClose={() => setError(null)}
+          />
+        )}
 
         {update && !updateDismissed && view.kind !== "settings" && (
           <UpdateBanner initial={update} onDismiss={() => setUpdateDismissed(true)} />
@@ -359,6 +518,11 @@ export default function App() {
               categories={categories}
               onOpen={openArticle}
               onItemsChange={setSiblings}
+              // Coming back from an article lands where the reader left off.
+              initialCategoryIndex={session?.catIndex ?? 0}
+              onCategoryIndexChange={rememberCategory}
+              initialScrollTop={session?.scrollTop ?? 0}
+              onScrollTopChange={rememberScroll}
               isOnShelf={(c) => shelf.some((e) => e.id === shelfId(selected.id, c))}
               onToggleShelf={({ category, first }) =>
                 toggleShelf(selected.id, selected.name, category, first)
@@ -399,49 +563,38 @@ export default function App() {
             onOpenSibling={openArticle}
             settings={settings}
             onSettingsChange={changeSettings}
-            onBack={() => {
-              setView({ kind: "list" });
-              // Leaving the reader is when a new reading position exists.
-              setProgressToken((t) => t + 1);
-            }}
+            // The reader's own error, not the app-wide one: it belongs to a
+            // single request, so it can be dismissed on its own and repeated.
+            onErrorClose={() => setArticleError(null)}
+            onRetry={
+              view.kind === "reader"
+                ? () => void openArticle(view.item)
+                : undefined
+            }
+            onBack={leaveReader}
             onOpenExternal={(url) => window.open(url, "_blank")}
           />
         )}
 
-        {view.kind === "history" && (
-          <HistoryPanel onOpen={openHistoryEntry} onClose={() => setView({ kind: "list" })} />
-        )}
+        {view.kind === "history" && <HistoryPanel onOpen={openHistoryEntry} onClose={closePanel} />}
 
-        {view.kind === "shelf" && (
-          <ShelfPanel onOpen={openShelfEntry} onClose={() => setView({ kind: "list" })} />
-        )}
+        {view.kind === "shelf" && <ShelfPanel onOpen={openShelfEntry} onClose={closePanel} />}
 
-        {view.kind === "stats" && (
-          <ReaderStatsPanel onClose={() => setView({ kind: "list" })} />
-        )}
+        {view.kind === "stats" && <ReaderStatsPanel onClose={closePanel} />}
 
         {view.kind === "highlights" && (
           <HighlightsPanel
             onOpen={(h) => {
               // Same shape as a history entry: switch to the source first, so
-              // the category tabs and contents come from the right place.
-              if (h.source_id) {
-                selectSource(h.source_id);
-                void loadSiblingsFor(h.source_id);
-              }
-              void api
-                .loadArticle(h.source_id, h.url, h.title)
-                .then((res) => {
-                  setArticleKind("article");
-                  setArticle(res);
-                  setView({
-                    kind: "reader",
-                    item: { title: h.title, link: h.url, image: "", date: "", kind: "article" },
-                  });
-                })
-                .catch((e) => setError(errorMessage(e)));
+              // the category tabs and contents come from the right place. A
+              // highlight with no source recorded still opens, just without one.
+              openArticleOf(
+                h.source_id,
+                { title: h.title, link: h.url, image: "", date: "", kind: "article" },
+                "article",
+              );
             }}
-            onClose={() => setView({ kind: "list" })}
+            onClose={closePanel}
           />
         )}
 
@@ -450,13 +603,17 @@ export default function App() {
             sources={sources}
             selectedId={selectedId}
             onSelect={selectSource}
-            onBack={() => setView({ kind: "list" })}
+            onBack={closePanel}
             onChecked={refreshSources}
           />
         )}
 
         {view.kind === "settings" && (
-          <SettingsPanel onSourcesChanged={refreshSources} onStatsChanged={refreshSources} />
+          <SettingsPanel
+            onSourcesChanged={refreshSources}
+            onStatsChanged={refreshSources}
+            onClose={closePanel}
+          />
         )}
       </main>
 

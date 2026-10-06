@@ -13,9 +13,13 @@ import { Banner, Empty, Spinner } from "./ui";
 export function ReaderStatsPanel({ onClose }: { onClose: () => void }) {
   const [stats, setStats] = useState<ReadingStats | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Bumped by 重试, so the same read can simply be run again. */
+  const [retryToken, setRetryToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setStats(null);
+    setError(null);
     api
       .readingStats()
       .then((s) => {
@@ -27,7 +31,7 @@ export function ReaderStatsPanel({ onClose }: { onClose: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [retryToken]);
 
   return (
     <>
@@ -42,16 +46,42 @@ export function ReaderStatsPanel({ onClose }: { onClose: () => void }) {
       </div>
 
       <div className="main-body stats-body">
-        {error && <Banner text={error} onClose={() => setError(null)} />}
+        {error && (
+          <Banner
+            text={error}
+            action={
+              <button
+                className="primary"
+                data-retry="stats"
+                aria-label="重试读取阅读统计"
+                onClick={() => setRetryToken((t) => t + 1)}
+              >
+                重试
+              </button>
+            }
+            onClose={() => setError(null)}
+          />
+        )}
 
         {error ? (
           // A failed load must not leave a spinner turning forever — the reader
           // would be left staring at a panel that is never going to arrive. The
-          // banner above already carries the reason.
+          // banner above carries the reason and the way to try again.
           <Empty
             title="统计没读出来"
             hint="本地记录读取失败，关掉这个页面再打开通常就好；具体原因在上面的提示条里。"
-            action={<button onClick={onClose}>返回列表</button>}
+            action={
+              <>
+                <button
+                  className="primary"
+                  data-retry="stats-body"
+                  onClick={() => setRetryToken((t) => t + 1)}
+                >
+                  重试
+                </button>
+                <button onClick={onClose}>返回列表</button>
+              </>
+            }
           />
         ) : stats === null ? (
           <div style={{ display: "flex", justifyContent: "center", padding: 60 }}>
