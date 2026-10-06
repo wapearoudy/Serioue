@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Serious",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "identifier": "fun.yck2026.serious",
   "build": {
     "beforeDevCommand": "pnpm dev",

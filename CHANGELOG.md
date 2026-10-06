@@ -2,6 +2,29 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.1.6 — B 类源三连修：7 个源恢复链接
+
+自 v0.1.5 以来的变化（B 类源引擎三连修 t63/t64/t65，评审 t66/t67/t68 全部 pass，发版门禁四项全绿）。
+
+### 修复
+
+- **列表模板链路**（t63，评审 t66 pass）—— `field_json` 对含 `{{}}`
+  的规则调 `render_template`（`{{` 门控 + 空/恒等保护，不短路既有路径）：
+  哔哩哔哩/哔哩分区、十七找书、推书君单/推书君子 5 个源的链接模板恢复渲染。
+- **纯数字 ID 门控**（t65，评审 t67 pass）—— `looks_like_link`
+  放行纯数字房间号，`resolve_link` 拼 host 根地址：虎牙直播 `660000` →
+  `https://www.huya.com/660000`。
+- **回退链**（t64，评审 t68 pass）—— `eval_json` 内顶层 `||`
+  切分 + 逐分支首个非空胜出（`{{}}` 嵌套与引号转义保护）：
+  开眼视频标题分支 2 命中；晋江改诚实中间态（JS 读容器与 `##` 算子下放另行处理）。
+
+### 门禁
+
+- `cargo test --release` EXIT=0：lib 211 + `legado_dom` 9（1 ignored）+ `t44_bclass` 9（3 ignored），
+  其余 19 按设计 ignored，0 failed（`test-results/gate-016-cargo.log`）。
+- `cargo clippy --release --all-targets -- -D warnings` EXIT=0 零告警。
+- `npx tsc --noEmit` EXIT=0；`pnpm check:updater` EXIT=0（endpoint 为 GitHub release feed）。
+
 ## 0.1.5 — 图标 + UI 焕新版
 
 自 v0.1.4 以来的变化（图标 t60 + UI 升级 t61，发版门禁 t62 四项全绿）。
