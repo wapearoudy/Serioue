@@ -133,3 +133,6 @@
 | — timeFormatUTC 显式时区版（§三-9） | t54 | **已落盘并通过评审**（`6ed6d41` 落盘，t57 pass：毫秒加 tz 偏移后读 UTC，大写兼容，非法返空） |
 | — 应用图标焕新（0.1.5，不在此 15 条内） | t60 | **已落盘**（霓虹渐变翻开书页，`scripts/make-logo.mjs` 单源真值，多尺寸导出） |
 | — UI 整体升级（0.1.5，不在此 15 条内） | t61 | **已落盘**（深色优先设计系统：KindIcon SVG、accent 渐变、卡片悬浮、共享 focus ring；contrast/focus 腿全绿） |
+| — 列表模板链路（B 类 5 源，t44 交接 §5-1） | t63 | **已落盘并通过评审**（`aea02d7` 合批，t66 pass：`field_json` 对含 `{{` 规则调 `render_template`；bili×2/17k/推书君×2 翻绿） |
+| — 回退链（开眼，t44 交接 §5-2） | t64 | **已落盘并通过评审**（`aea02d7` 合批，t68 pass：`split_or_branches` 顶层切分+逐分支首个非空胜出；开眼 title 分支 2 命中） |
+| — 纯数字 ID 门控（虎牙，t44 交接 §5-3） | t65 | **已落盘并通过评审**（`aea02d7` 合批，t67 pass：纯数字放行+`resolve_link` 拼 host 根；`660000→https://www.huya.com/660000`；晋江 title 串味单列残留待 `##` 下放） |
