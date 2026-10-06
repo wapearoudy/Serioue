@@ -8,6 +8,7 @@ import { clearHighlights, paintHighlight } from "./highlight";
 import { ReaderSettings } from "./ReaderSettings";
 import { Sentences, TtsPanel, firstVisibleSentence, splitSentences, type SentenceRef } from "./TtsPanel";
 import { useKeyboardRows } from "./keyboardRow";
+import { useDialogFocus } from "./focusTrap";
 import { Banner, Spinner } from "./ui";
 import type { ArticleResponse, Settings } from "../api";
 
@@ -15,6 +16,102 @@ import type { ArticleResponse, Settings } from "../api";
 function truncate(text: string, max: number): string {
   const clean = text.trim();
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
+/**
+ * The in-app note editor that replaced `window.prompt`.
+ *
+ * It shows the quoted passage (so the note is written with the sentence in
+ * view, not from memory), takes multiple lines, and keeps the draft when
+ * saving fails — the same contract `HighlightsPanel` already honours. Focus
+ * behaviour comes from the shared `useDialogFocus`: the hook moves focus into
+ * the box on open, traps Tab inside, closes on Escape, and hands focus back to
+ * the opener (the 笔记 button, which the caller focuses explicitly because the
+ * toolbar's mousedown guard would otherwise leave focus on <body>).
+ */
+function NoteDialog({
+  quote,
+  draft,
+  onDraft,
+  saving,
+  error,
+  onSave,
+  onClose,
+}: {
+  quote: string;
+  draft: string;
+  onDraft: (v: string) => void;
+  saving: boolean;
+  error: string | null;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const dialog = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialog, onClose);
+  return (
+    <div
+      data-note-dialog
+      ref={dialog}
+      role="dialog"
+      aria-modal="true"
+      aria-label="给划线加笔记"
+      // Inline rather than in the shared stylesheet: this round is not allowed
+      // to touch styles.css, and the editor must stay inside the app's own
+      // theme variables so it never flashes a white system box at night.
+      style={{
+        position: "fixed",
+        left: "50%",
+        top: "24%",
+        transform: "translateX(-50%)",
+        zIndex: 60,
+        width: "min(440px, 90vw)",
+        padding: 14,
+        background: "var(--bg-elevated)",
+        border: "1px solid var(--border)",
+        borderRadius: 12,
+        boxShadow: "0 8px 22px rgb(0 0 0 / 45%)",
+      }}
+    >
+      <blockquote
+        data-note-quote
+        style={{
+          margin: "0 0 10px",
+          paddingLeft: 11,
+          borderLeft: "3px solid var(--accent)",
+          color: "var(--text)",
+          fontSize: 13,
+          lineHeight: 1.7,
+        }}
+      >
+        {quote}
+      </blockquote>
+      <textarea
+        data-note-input
+        value={draft}
+        onChange={(e) => onDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key === "Enter") onSave();
+        }}
+        placeholder="写点什么…（多行可写，Ctrl+Enter 保存）"
+        aria-label="笔记内容"
+        rows={3}
+        style={{ width: "100%", fontSize: 13, resize: "vertical" }}
+      />
+      {error && (
+        <div data-note-error style={{ color: "var(--err)", fontSize: 12, marginTop: 6 }}>
+          {error}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <button className="primary" data-note-save disabled={saving} onClick={onSave}>
+          {saving ? "保存中…" : "保存"}
+        </button>
+        <button className="ghost" data-note-cancel onClick={onClose}>
+          取消
+        </button>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -204,6 +301,21 @@ export function Reader({
   /** The passage the reader just selected, and where to put the buttons. */
   const [pending, setPending] = useState<{ text: string; x: number; y: number } | null>(null);
   const [markError, setMarkError] = useState<string | null>(null);
+  /**
+   * The open note editor, if any.
+   *
+   * `quote` is the passage the note belongs to (so it is written with the
+   * sentence in view); `draft` is owned by the editor and survives a failed
+   * save, exactly like `HighlightsPanel`'s own editor. A failed save used to
+   * clear `pending` and drop the words — now the dialog stays open with the
+   * text intact, because a notice plus a lost draft is worse than a notice.
+   */
+  const [noteOpen, setNoteOpen] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [noteError, setNoteError] = useState<string | null>(null);
+  /** The 笔记 button that opened the editor, so focus can be handed back. */
+  const noteTrigger = useRef<HTMLButtonElement>(null);
 
   const captureSelection = () => {
     const selection = window.getSelection();
@@ -223,14 +335,36 @@ export function Reader({
     setPending({ text, x: box.left + box.width / 2, y: box.top });
   };
 
-  const saveHighlight = async (withNote: boolean) => {
+  /**
+   * Open the note editor for the current selection. The panel (not a system
+   * prompt) is what asks for the words: the quoted passage stays on screen,
+   * several lines fit, and the focus hook handles Escape + focus for us.
+   */
+  const openNoteEditor = () => {
+    if (!pending) return;
+    setNoteOpen(pending.text);
+    setNoteDraft("");
+    setNoteError(null);
+  };
+
+  /** Close the editor; focus goes back to the 笔记 button that opened it. */
+  const closeNoteEditor = () => {
+    setNoteOpen(null);
+    setNoteSaving(false);
+    setNoteError(null);
+    // The toolbar remounts with the dialog gone; wait a frame so the trigger
+    // is focusable again before handing focus back.
+    requestAnimationFrame(() => noteTrigger.current?.focus());
+  };
+
+  const saveHighlight = async (withNote: boolean, note?: string) => {
     if (!pending || !markUrl) return;
-    let note = "";
-    if (withNote) {
-      const typed = window.prompt("给这段加一句笔记（可以留空）", "");
-      if (typed === null) return;
-      note = typed.trim();
+    if (withNote && note === undefined) {
+      openNoteEditor();
+      return;
     }
+    if (withNote) setNoteSaving(true);
+    else setNoteSaving(false);
     try {
       const saved = await api.addHighlight({
         id: "",
@@ -239,15 +373,24 @@ export function Reader({
         title: article?.title ?? "",
         source_name: sourceName,
         text: pending.text,
-        note,
+        note: (withNote ? note ?? "" : "").trim(),
         created_at: 0,
       });
       setMarks((prev) => (prev.some((m) => m.id === saved.id) ? prev : [...prev, saved]));
       window.getSelection()?.removeAllRanges();
       setPending(null);
+      if (withNote) closeNoteEditor();
     } catch (e) {
-      setPending(null);
-      setMarkError(errorMessage(e));
+      if (withNote) {
+        // Keep the draft in the box: clearing the panel here would lose the
+        // words the reader just wrote. `HighlightsPanel.saveNote` does the
+        // same for its own editor (`HighlightsPanel.tsx:86-91`).
+        setNoteSaving(false);
+        setNoteError(errorMessage(e));
+      } else {
+        setPending(null);
+        setMarkError(errorMessage(e));
+      }
     }
   };
 
@@ -867,7 +1010,19 @@ export function Reader({
 
       {markError && <Banner text={markError} onClose={() => setMarkError(null)} />}
 
-      {pending && (
+      {noteOpen && (
+        <NoteDialog
+          quote={noteOpen}
+          draft={noteDraft}
+          onDraft={setNoteDraft}
+          saving={noteSaving}
+          error={noteError}
+          onSave={() => void saveHighlight(true, noteDraft)}
+          onClose={closeNoteEditor}
+        />
+      )}
+
+      {pending && !noteOpen && (
         <div
           className="mark-pop"
           style={{ left: pending.x, top: pending.y }}
@@ -876,7 +1031,9 @@ export function Reader({
           onMouseDown={(e) => e.preventDefault()}
         >
           <button onClick={() => void saveHighlight(false)}>高亮</button>
-          <button onClick={() => void saveHighlight(true)}>笔记</button>
+          <button ref={noteTrigger} data-note-trigger onClick={() => void saveHighlight(true)}>
+            笔记
+          </button>
           <button
             className="ghost"
             onClick={() => {

@@ -156,11 +156,14 @@ try {
   console.log("  screenshot: test-results/highlight-marked.png");
 
   // -- a note ---------------------------------------------------------------
-  // `prompt` is how the note is asked for; answer it before clicking 笔记.
-  page.once("dialog", (d) => d.accept("这一段值得回头再看"));
+  // The note is asked for in the in-app NoteDialog (window.prompt was removed
+  // in t45): fill the textarea and save, instead of answering a system dialog.
   await selectText(page, "成组调整");
   await page.waitForSelector(".mark-pop", { timeout: 5000 });
   await page.locator(".mark-pop button", { hasText: "笔记" }).click();
+  await page.waitForSelector("[data-note-dialog]", { timeout: 5000 });
+  await page.locator("[data-note-input]").fill("这一段值得回头再看");
+  await page.locator("[data-note-save]").click();
   await page.waitForFunction(
     () => document.querySelectorAll(".reader-rich mark.reader-mark").length === 3,
     null,

@@ -35,6 +35,16 @@ export function Sidebar(props: Props) {
   const [reading, setReading] = useState<ContinueEntry[]>([]);
   /** Set when the 继续阅读 shelf could not be read; see below. */
   const [continueFailed, setContinueFailed] = useState(false);
+  /**
+   * The last favorite toggle that failed, with its source still attached.
+   *
+   * A bare `window.alert` used to be the whole story here: the error was shown
+   * and the reader had no next step. Keeping the source is what makes a retry
+   * possible — 重试 repeats exactly this toggle, not some other request.
+   */
+  const [favFailed, setFavFailed] = useState<{ source: SourceSummary; message: string } | null>(
+    null,
+  );
   const rows = useKeyboardRows();
 
   // Re-fetch whenever the parent reports that progress moved.
@@ -88,9 +98,25 @@ export function Sidebar(props: Props) {
     e.stopPropagation();
     try {
       await api.updateSource(s.id, { favorite: !s.favorite });
+      setFavFailed(null);
       props.onChanged();
     } catch (err) {
-      window.alert(errorMessage(err));
+      // Inline, with a way forward: the same toggle can be re-issued from the
+      // notice below, instead of the error being a dead end in a system box.
+      setFavFailed({ source: s, message: errorMessage(err) });
+    }
+  }
+
+  /** Re-issue the favorite toggle that just failed. */
+  async function retryFavorite() {
+    const failed = favFailed;
+    if (!failed) return;
+    try {
+      await api.updateSource(failed.source.id, { favorite: !failed.source.favorite });
+      setFavFailed(null);
+      props.onChanged();
+    } catch (err) {
+      setFavFailed({ source: failed.source, message: errorMessage(err) });
     }
   }
 
@@ -161,6 +187,32 @@ export function Sidebar(props: Props) {
       </div>
 
       <div className="sidebar-body">
+        {favFailed && (
+          <div
+            data-fav-error
+            role="alert"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "6px 8px",
+              fontSize: 12,
+              lineHeight: 1.7,
+              color: "var(--err)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              marginBottom: 6,
+            }}
+          >
+            <span style={{ flex: 1 }}>收藏失败：{favFailed.message}</span>
+            <button className="primary" data-fav-retry onClick={() => void retryFavorite()}>
+              重试
+            </button>
+            <button className="ghost" aria-label="关闭" onClick={() => setFavFailed(null)}>
+              ✕
+            </button>
+          </div>
+        )}
         {continueFailed && (
           // Inline rather than in the shared stylesheet: this round is not
           // allowed to touch styles.css, and a stylesheet rule that never loads
