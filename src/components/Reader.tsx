@@ -335,10 +335,30 @@ export function Reader({
     marks.forEach((m) => paintHighlight(el, m.text, m.id));
   }, [view?.rich, marks]);
 
+  /**
+   * The last ratio read while the reader container was alive.
+   *
+   * When the reader unmounts React has already detached `body.current`, so
+   * `readRatio()` used to answer 0 — and 0 means "the reader is at the very
+   * top". The unmount save then wrote that 0 over the real position, which is
+   * why an article reopened from the beginning. A dead container has no
+   * position to report, so the last live reading is kept here and used instead.
+   */
+  const lastRatio = useRef(0);
+  /**
+   * Whether this mount has ever actually been scrolled.
+   *
+   * Saving on the way out only means something once the reader has been
+   * somewhere: a cleanup that runs before that has no position to record, and
+   * the 0 it would write is not a position at all.
+   */
+  const scrolled = useRef(false);
+
   // How far down the readable area the user is.
   const readRatio = () => {
     const el = body.current;
-    if (!el) return 0;
+    // "No container" is not "at the top": report what was last measured.
+    if (!el || !el.isConnected) return lastRatio.current;
     const scrollable = el.scrollHeight - el.clientHeight;
     if (scrollable <= 1) return 0;
     const value = el.scrollTop / scrollable;
@@ -346,20 +366,29 @@ export function Reader({
   };
 
   // Restore the remembered position once per article.
+  //
+  // The latch is set when the position has actually been fetched, not when the
+  // effect starts: StrictMode runs mount effects twice in development (start,
+  // cleanup, start again — on the same instance, so the ref survives), and a
+  // latch set on the first start makes the second run — the only one whose
+  // result is still wanted — return early. A real unmount gives a fresh ref,
+  // which is what lets the next opening restore.
   useEffect(() => {
     const url = articleUrl;
     if (!url || !article || restored.current === url) return;
-    restored.current = url;
     let cancelled = false;
     api
       .getProgress(url)
       .then((ratio) => {
-        if (cancelled || ratio <= 0.01) return;
+        if (cancelled) return;
+        restored.current = url;
+        if (ratio <= 0.01) return;
         // Wait for the layout to settle, or the scroll lands in the wrong place.
         requestAnimationFrame(() => {
           const el = body.current;
-          if (!el) return;
+          if (!el || !el.isConnected) return;
           el.scrollTop = (el.scrollHeight - el.clientHeight) * ratio;
+          lastRatio.current = ratio;
           setProgress(ratio);
         });
       })
@@ -379,6 +408,11 @@ export function Reader({
     const persist = (force: boolean) => {
       const now = Date.now();
       if (!force && now - savedAt.current < 1200) return;
+      // Nothing has moved since this reader mounted, so there is no position to
+      // record — and writing 0 here wipes the one the reader is about to
+      // restore. StrictMode's simulated unmount lands exactly at that moment,
+      // which is why the stored position used to disappear before it was read.
+      if (force && !scrolled.current) return;
       savedAt.current = now;
       const ratio = readRatio();
       setProgress(ratio);
@@ -388,6 +422,10 @@ export function Reader({
     };
 
     const onScroll = () => {
+      // Remember a live reading now: by the time the unmount save runs the
+      // container is gone and its scrollTop with it.
+      scrolled.current = true;
+      lastRatio.current = readRatio();
       persist(false);
       // Scrolling is the reader taking the page back from the voice. Our own
       // follow-the-sentence scrolling has to be ignored, or the panel would
