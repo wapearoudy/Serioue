@@ -16,6 +16,16 @@
 use serde_json::json;
 use serious_lib::engine::js;
 
+/// `ruleArticles` of 多看阅读, copied from collection 160 with nothing changed.
+const DUOKAN_RULE_ARTICLES: &str = r#"
+JSON.parse(result).items.map(bk=>({
+a:bk.title+bk.summary,
+b:java.timeFormat(bk.create_time*1000),
+c:bk.book_cover,
+d:"https://www.duokan.com/store/v0/android/feed/"+bk.id
+}))
+"#;
+
 /// Verbatim from the rule, with only the `else {` wrapper of the surrounding
 /// if/else chain removed — the body is untouched.
 const REAL_RULE_FRAGMENT: &str = r#"
@@ -203,6 +213,70 @@ fn time_format_defaults_to_a_date_and_honours_java_patterns() {
             && &full.trim()[13..14] == ":"
             && &full.trim()[16..17] == ":",
         "yyyy-MM-dd HH:mm:ss should be digits and the separators in the right places, got {full:?}"
+    );
+}
+
+/// The rule that made this worth doing, copied verbatim.
+///
+/// 多看阅读, collection 160:
+/// ```text
+/// JSON.parse(result).items.map(bk=>({
+/// a:bk.title+bk.summary,
+/// b:java.timeFormat(bk.create_time*1000),
+/// c:bk.book_cover,
+/// d:"https://www.duokan.com/store/v0/android/feed/"+bk.id
+/// }))
+/// ```
+///
+/// Scope, stated precisely so this test is not read as more than it is: it
+/// proves the script runs and that `timeFormat` formats correctly *inside the
+/// real rule*. It does **not** prove the source works end to end — the list
+/// extractor has no handling for a rule that is a whole `<js>` block, which is
+/// a larger gap and is tracked separately. The date is checked here because the
+/// other two sources that call `timeFormat` (知乎早报, Lofter) do so in
+/// `rulePubDate`, where this is the only thing that was missing.
+///
+/// Note `create_time` arrives in **seconds** and the rule scales it itself. A
+/// `timeFormat` that assumed milliseconds would render a date in 1970 rather
+/// than fail, which is the kind of wrong that looks like a working feature.
+#[test]
+fn the_duokan_rule_runs_verbatim() {
+    let payload = r#"{"items":[
+        {"id":"3001","title":"第一本书","summary":"·简介一","create_time":1709613223,"book_cover":"https://c/1.jpg"},
+        {"id":"3002","title":"第二本书","summary":"·简介二","create_time":1709613300,"book_cover":"https://c/2.jpg"}
+    ]}"#;
+
+    // The rule's `JSON.parse(result)` is the tell: Legado hands the *response
+    // body text* to `result` when `ruleArticles` is a whole JS block, so the
+    // body is passed as a string. Passing the parsed object instead makes
+    // `JSON.parse` stringify it to `[object Object]` and fail with a
+    // `SyntaxError`, which is a failure of the harness rather than of the rule.
+    let value = js::eval_to_json(DUOKAN_RULE_ARTICLES, &serde_json::Value::String(payload.into()))
+        .unwrap_or_else(|e| panic!("the rule failed: {e}"));
+    let items = value
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a list, got {value}"));
+    assert_eq!(items.len(), 2, "the rule should map every item: {value}");
+
+    // The date is the only field this method produces, so it is the only one
+    // worth pinning — and it is checked against the engine's own calendar
+    // reading, for the same reason as above: a literal would hide the timezone.
+    let expected = js::eval_to_string(
+        "var d = new Date(1709613223 * 1000); \
+         var p = function (v) { return v < 10 ? '0' + v : String(v); }; \
+         result = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());",
+        &json!({}),
+    );
+    let got = items[0]["b"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no formatted date in {value}"));
+    assert_eq!(got, expected.trim(), "the rule formatted the wrong date");
+
+    // And the rule's other fields must be untouched by the fix.
+    assert_eq!(items[0]["a"].as_str(), Some("第一本书·简介一"));
+    assert_eq!(
+        items[1]["d"].as_str(),
+        Some("https://www.duokan.com/store/v0/android/feed/3002")
     );
 }
 

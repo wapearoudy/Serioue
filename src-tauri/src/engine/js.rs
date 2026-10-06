@@ -1,4 +1,4 @@
-use boa_engine::{js_string, Context, JsResult, JsValue, NativeFunction, Source};
+use boa_engine::{js_string, property::Attribute, Context, JsResult, JsValue, NativeFunction, Source};
 use serde_json::Value as Json;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -617,6 +617,33 @@ fn strip_wrapper(code: &str) -> String {
     c.to_string()
 }
 
+/// Serialise a script value the way a rule author would expect.
+///
+/// `JsValue::to_string` is JavaScript's `ToString`, and `ToString` on an array
+/// renders every element as `[object Object]` — so a rule that maps items into
+/// objects, which is what a `ruleArticles` written as a whole JS block does,
+/// came back as that string instead of a list. `JSON.stringify` is what the
+/// rule author meant, and it is the only form that survives the round trip.
+fn stringify(value: &JsValue, context: &mut Context) -> Option<String> {
+    context
+        .register_global_property(
+            js_string!("__js_result"),
+            value.clone(),
+            Attribute::empty(),
+        )
+        .ok()?;
+    let rendered = context
+        .eval(Source::from_bytes("JSON.stringify(globalThis.__js_result)"))
+        .ok()?;
+    let text = rendered.to_string(context).ok()?.to_std_string_escaped();
+    // `JSON.stringify(undefined)` is the value `undefined`, whose `ToString` is
+    // the string "undefined" — not JSON, and not a legitimate result.
+    if text == "undefined" {
+        return None;
+    }
+    Some(text)
+}
+
 /// Evaluate a script and return its value as JSON when possible.
 pub fn eval_to_json(code: &str, json: &Json) -> Result<Json, JsError> {
     let mut context = new_context(json)?;
@@ -625,9 +652,14 @@ pub fn eval_to_json(code: &str, json: &Json) -> Result<Json, JsError> {
         .eval(Source::from_bytes(&wrapped))
         .map_err(js_err)?;
 
-    // If the script returned a string that is itself JSON, unwrap it: rules
-    // commonly do `JSON.parse(java.ajax(url))` or return raw ajax output.
-    if let Some(text) = value.to_string(&mut context).ok().map(|s| s.to_std_string_escaped()) {
+    // A string may itself be JSON: rules commonly end in
+    // `JSON.parse(java.ajax(url))` or `JSON.stringify(items)`, and both hand
+    // back a string that has to be unwrapped before it is usable.
+    if value.is_string() {
+        let text = value
+            .to_string(&mut context)
+            .map(|s| s.to_std_string_escaped())
+            .unwrap_or_default();
         let trimmed = text.trim();
         if trimmed.starts_with('{') || trimmed.starts_with('[') {
             if let Ok(v) = serde_json::from_str::<Json>(trimmed) {
@@ -635,6 +667,13 @@ pub fn eval_to_json(code: &str, json: &Json) -> Result<Json, JsError> {
             }
         }
         return Ok(Json::String(text));
+    }
+
+    // Objects and arrays keep their shape only through `JSON.stringify`.
+    if let Some(text) = stringify(&value, &mut context) {
+        if let Ok(v) = serde_json::from_str::<Json>(&text) {
+            return Ok(v);
+        }
     }
     Ok(Json::String(String::new()))
 }
