@@ -25,6 +25,7 @@
     "test:music-stability": "node scripts/music-stability-test.mjs",
     "test:reader-diagnosis": "node scripts/reader-diagnosis-test.mjs",
     "test:reader-return": "node scripts/reader-return-test.mjs",
+    "check:updater": "node scripts/check-updater-config.mjs",
     "demo:video": "node scripts/make-demo-video.mjs",
     "test:video": "node scripts/video-test.mjs",
     "test:episodes": "node scripts/episode-test.mjs",
