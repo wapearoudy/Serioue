@@ -47,7 +47,8 @@
     "test:video-idle": "node scripts/video-idle-test.mjs",
     "test:theme-contrast": "node scripts/theme-contrast-test.mjs",
     "test:focus-visible": "node scripts/focus-visible-test.mjs",
-    "test:reader-position": "node scripts/reader-position-test.mjs"
+    "test:reader-position": "node scripts/reader-position-test.mjs",
+    "test:tts-follow": "node scripts/tts-follow-test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
