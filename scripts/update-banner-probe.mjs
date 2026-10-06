@@ -13,21 +13,57 @@ import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 import { createServer as createHttpsServer } from "node:https";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const exe = path.join(root, "src-tauri", "target", "release", "serious.exe");
-const installer = path.join(root, "src-tauri", "target", "release", "bundle", "nsis", "Serious_0.1.2_x64-setup.exe");
+const bundle = path.join(root, "src-tauri", "target", "release", "bundle", "nsis");
+
+// Version and installer both come from outside this file. Naming a version here
+// means the next release quietly stops finding it, and a probe that cannot find
+// its fixture is worse than no probe at all.
+const conf = JSON.parse(await readFile(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"));
+const currentVersion = conf.version;
+const [cMaj, cMin, cPatch] = currentVersion.split(".").map(Number);
+const newVersion =
+  process.env.SERIOUS_FAKE_UPDATE_VERSION ?? `${cMaj}.${cMin}.${cPatch + 1}`;
+
+// The real files are `...-setup.exe` with a **hyphen**; a `_setup\.exe` pattern
+// matches nothing and would report "no installer" with the files sitting there.
+const installers = (await readdir(bundle).catch(() => [])).filter((name) =>
+  /^Serious_.*setup\.exe$/i.test(name),
+);
+if (installers.length === 0) {
+  console.error(
+    `no installer in ${bundle}\n` +
+      "build one first:\n" +
+      "  $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content src-tauri\\serious-updater.key -Raw).Trim()\n" +
+      "  $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''\n" +
+      "  pnpm tauri build --bundles nsis\n" +
+      "the signing key is required — without it there is no .sig to sign the manifest with",
+  );
+  process.exit(1);
+}
+const installer = path.join(bundle, installers.sort().at(-1));
+const sigFile = `${installer}.sig`;
+if (!existsSync(sigFile)) {
+  console.error(
+    `no signature next to ${path.basename(installer)} — was the bundle built signed?`,
+  );
+  process.exit(1);
+}
+console.log(`app version ${currentVersion}, serving ${newVersion} as the update`);
+
 const PORT = 19555;
 const ORIGIN = `https://127.0.0.1:${PORT}`;
 const tls = {
   key: await readFile(path.join(root, "test-results", "local-cert", "key.pem")),
   cert: await readFile(path.join(root, "test-results", "local-cert", "cert.pem")),
 };
-const sig = (await readFile(`${installer}.sig`, "utf8")).trim();
+const sig = (await readFile(sigFile, "utf8")).trim();
 const size = statSync(installer).size;
 
 const server = createHttpsServer(tls, (req, res) => {
@@ -36,7 +72,7 @@ const server = createHttpsServer(tls, (req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(
       JSON.stringify({
-        version: "0.1.3",
+        version: newVersion,
         notes: "banner probe",
         pub_date: new Date("2026-01-15T10:00:00Z").toISOString(),
         platforms: { "windows-x86_64": { signature: sig, url: `${ORIGIN}/setup.exe` } },

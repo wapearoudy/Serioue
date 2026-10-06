@@ -43,16 +43,27 @@ const sigDir = path.join(outDir, "signaccept");
 const exe = path.join(root, "src-tauri", "target", "release", "serious.exe");
 const PORT = 19555;
 const ORIGIN = `https://127.0.0.1:${PORT}`;
-const NEW_VERSION = "0.1.3";
+// The manifest's version is derived from the app's own, never typed in. Pinning
+// it means the next release either throws or — worse — keeps comparing a stale
+// pair while printing "ok".
+const tauriConf = JSON.parse(await readFile(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"));
+const CURRENT_VERSION = tauriConf.version;
+const [cMaj, cMin, cPatch] = CURRENT_VERSION.split(".").map(Number);
+const NEW_VERSION =
+  process.env.SERIOUS_FAKE_UPDATE_VERSION ?? `${cMaj}.${cMin}.${cPatch + 1}`;
 
 // Two signatures over the *same* bytes, made by the real key, differing only in
 // whether they are bound to a version. Both are valid; the point is to find out
 // which one the app's verifier accepts, rather than guessing.
+//
+// Note these are produced by scripts/sign-probe.ps1, which signs with
+// `--app-version <NEW_VERSION>`; if you override that version here, re-run the
+// probe script so the two agree.
 const ARTIFACTS = {
   // signed without --app-version: trusted comment is "timestamp:…\tfile:…"
   plain: { file: "probe.bin", name: "无版本绑定" },
-  // signed with --app-version 0.1.3: trusted comment gains "version:0.1.3"
-  bound: { file: "probev.bin", name: "绑定版本 0.1.3" },
+  // signed with --app-version: trusted comment gains "version:<NEW_VERSION>"
+  bound: { file: "probev.bin", name: `绑定版本 ${NEW_VERSION}` },
 };
 
 for (const { file } of Object.values(ARTIFACTS)) {
@@ -64,6 +75,7 @@ for (const { file } of Object.values(ARTIFACTS)) {
     process.exit(1);
   }
 }
+console.log(`app version ${CURRENT_VERSION}, serving ${NEW_VERSION} as the update`);
 
 const payloads = {};
 const signatures = {};

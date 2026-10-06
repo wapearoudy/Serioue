@@ -9,8 +9,11 @@
 #
 #   probe.bin   signed without --app-version
 #               trusted comment: timestamp:…	file:probe.bin
-#   probev.bin  signed with --app-version 0.1.3
-#               trusted comment: timestamp:…	file:probev.bin	version:0.1.3
+#   probev.bin  signed with the derived next version
+#               trusted comment: timestamp:…	file:probev.bin	version:<patch+1>
+#
+# The version is derived from src-tauri/tauri.conf.json; set SERIOUS_FAKE_VERSION
+# to override it without touching any tracked file.
 #
 # Note the environment variable takes the *contents* of the key, not its path.
 # Passing a path fails with:
@@ -28,6 +31,20 @@ if (-not (Test-Path $keyPath)) { throw "no signing key at $keyPath" }
 $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content $keyPath -Raw).Trim()
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""
 
+# The version comes from the one place that defines it, never typed here: a
+# pinned version goes stale at the next release and the signature would claim a
+# version the manifest no longer says. SERIOUS_FAKE_VERSION overrides it, which
+# also makes "test an upgrade from 0.1.2 to 0.1.3" possible without rolling the
+# project back.
+$conf = Get-Content (Join-Path $root "src-tauri\tauri.conf.json") -Raw | ConvertFrom-Json
+$currentVersion = $conf.version
+if ($env:SERIOUS_FAKE_VERSION) {
+    $currentVersion = $env:SERIOUS_FAKE_VERSION
+}
+$parts = $currentVersion.Split(".")
+$newVersion = "$($parts[0]).$($parts[1]).$([int]$parts[2] + 1)"
+Write-Host "app version $currentVersion -> signing the bound probe as $newVersion"
+
 $payload = "serious updater acceptance probe - not an executable`n"
 foreach ($name in @("probe.bin", "probev.bin")) {
     [System.IO.File]::WriteAllText((Join-Path $dir $name), $payload)
@@ -41,8 +58,8 @@ try {
     pnpm tauri signer sign "test-results\signaccept\probe.bin"
     if ($LASTEXITCODE -ne 0) { throw "signing probe.bin failed ($LASTEXITCODE)" }
 
-    Write-Host "== signing with --app-version 0.1.3 =="
-    pnpm tauri signer sign --app-version 0.1.3 "test-results\signaccept\probev.bin"
+    Write-Host "== signing with --app-version $newVersion =="
+    pnpm tauri signer sign --app-version $newVersion "test-results\signaccept\probev.bin"
     if ($LASTEXITCODE -ne 0) { throw "signing probev.bin failed ($LASTEXITCODE)" }
 } finally {
     Pop-Location

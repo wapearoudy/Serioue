@@ -27,7 +27,7 @@ import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 import { createServer as createHttpsServer } from "node:https";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,21 +35,59 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = path.join(root, "test-results");
 const exe = path.join(root, "src-tauri", "target", "release", "serious.exe");
-const installer = path.join(
-  root,
-  "src-tauri",
-  "target",
-  "release",
-  "bundle",
-  "nsis",
-  "Serious_0.1.2_x64-setup.exe",
+const bundle = path.join(root, "src-tauri", "target", "release", "bundle", "nsis");
+
+// Versions come from the one place that defines them. Pinning them here would
+// make this script go quietly stale at the next release: it would look for an
+// installer that is no longer produced, and compare the wrong pair of versions
+// while still printing "ok".
+const tauriConf = JSON.parse(await readFile(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"));
+const CURRENT_VERSION = tauriConf.version;
+
+// The "new" version is derived, never typed: patch+1 of whatever the app says it
+// is. Override with SERIOUS_FAKE_UPDATE_VERSION when a test needs a specific gap.
+const [cMaj, cMin, cPatch] = CURRENT_VERSION.split(".").map(Number);
+const NEW_VERSION =
+  process.env.SERIOUS_FAKE_UPDATE_VERSION ??
+  `${cMaj}.${cMin}.${cPatch + 1}`;
+
+// The installer is found by globbing. A path pinned to one version throws on the
+// next release, and gets deleted rather than fixed.
+//
+// Note the pattern: the real files are `...-setup.exe` with a **hyphen**, so a
+// `_setup\.exe` pattern matches nothing at all and reports "no installer" while
+// the files are sitting right there.
+const installers = (await readdir(bundle).catch(() => [])).filter((name) =>
+  /^Serious_.*setup\.exe$/i.test(name),
 );
+if (installers.length === 0) {
+  console.error(
+    `no installer in ${bundle}\n` +
+      "build one first:\n" +
+      "  $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content src-tauri\\serious-updater.key -Raw).Trim()\n" +
+      "  $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''\n" +
+      "  pnpm tauri build --bundles nsis\n" +
+      "the signing key is required, otherwise no .sig is produced and there is nothing to verify",
+  );
+  process.exit(1);
+}
+if (installers.length > 1) {
+  console.log(`several installers present, using the newest: ${installers.join(", ")}`);
+}
+const installer = path.join(bundle, installers.sort().at(-1));
 const sigFile = `${installer}.sig`;
+if (!existsSync(sigFile)) {
+  console.error(
+    `no signature next to ${path.basename(installer)} (${path.basename(sigFile)})\n` +
+      "the bundle was built without a signing key, so there is nothing to verify",
+  );
+  process.exit(1);
+}
+console.log(`app version ${CURRENT_VERSION}, serving ${NEW_VERSION} as the update`);
+console.log(`installer: ${path.basename(installer)}`);
 
 const PORT = 19555;
 const ORIGIN = `https://127.0.0.1:${PORT}`;
-const NEW_VERSION = "0.1.3";
-const CURRENT_VERSION = "0.1.2";
 
 // The updater plugin refuses to start on a plain http:// endpoint ("The
 // configured updater endpoint must use a secure protocol like https"), so the
@@ -229,7 +267,7 @@ async function makeSignedDummy() {
 
   // An inert file: not a program, so Windows cannot run it.
   const payload = Buffer.from("serious updater acceptance probe — not an executable\n", "utf8");
-  const comment = "timestamp:1700000000\tfile:serious-updater-probe.bin\tversion:0.1.3";
+  const comment = `timestamp:1700000000\tfile:serious-updater-probe.bin\tversion:${NEW_VERSION}`;
   const primary = crypto.sign(
     null,
     crypto.createHash("blake2b512").update(payload).digest(),
@@ -613,8 +651,10 @@ try {
   const good = await check();
   record(`case good    -> "${good.text}" (colour ${good.colour})`);
   results.push({ case: "good", observed: good.text });
-  if (!/发现新版本 0\.1\.3/.test(good.text)) {
-    throw new Error(`expected "发现新版本 0.1.3", saw "${good.text}"`);
+  // Asserted against the derived version, so the check follows the app rather than
+  // a literal that would quietly stop matching at the next release.
+  if (!good.text.includes(`发现新版本 ${NEW_VERSION}`)) {
+    throw new Error(`expected "发现新版本 ${NEW_VERSION}", saw "${good.text}"`);
   }
 
   // -- 4. endpoint error wording ---------------------------------------------
