@@ -155,8 +155,10 @@ try {
   await page.waitForTimeout(300);
   let p = await probe();
   assert.equal(p.clearedHistory, 0, "the history was cleared without a confirmation");
+  // The panel pages 100 at a time (t72): cancelling must keep every LOADED
+  // row, not the two rows the old two-record fixture had.
   const stillThere = await page.locator(".list .row").count();
-  assert.equal(stillThere, 2, `cancelling lost rows: ${stillThere}`);
+  assert.ok(stillThere >= 100, `cancelling lost rows: ${stillThere}`);
   console.log(`  清空 cancelled: 0 calls, ${stillThere} rows untouched`);
 
   page.once("dialog", (d) => d.accept());

@@ -791,6 +791,52 @@ input[type="range"]:focus-visible,
   letter-spacing: 0.012em;
 }
 
+/* A wide table must scroll inside the article, not under the window.
+   Only this domain scrolls: .reader-body/.reader-rich get overflow-x plus a
+   self-scrolling table (nowrap cells), while .app/.main stay overflow:hidden
+   by design. New colours are all theme tokens, so contrast is untouched. */
+.reader-body,
+.reader-rich {
+  overflow-x: auto;
+}
+
+.reader-body table,
+.reader-rich table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 14px 0;
+  font-size: 0.92em;
+  line-height: 1.6;
+}
+
+.reader-body th,
+.reader-body td,
+.reader-rich th,
+.reader-rich td {
+  border: 1px solid var(--border);
+  padding: 7px 12px;
+  white-space: nowrap;
+  text-align: left;
+  vertical-align: top;
+}
+
+.reader-body thead th,
+.reader-rich thead th,
+.reader-body tr:first-child th,
+.reader-rich tr:first-child th {
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.reader-body tr:nth-child(even) td,
+.reader-rich tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--bg-elevated) 55%, transparent);
+}
+
 .reader-meta {
   color: var(--text-faint);
   font-size: 12px;

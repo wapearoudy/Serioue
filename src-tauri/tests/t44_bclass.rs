@@ -156,18 +156,10 @@ mod repro {
         let (items, _) = parse_list(&s, body, "https://app.jjwxc.org/");
         println!("jinjiang title-hash items: {items:?}");
         assert_eq!(items.len(), 1);
-        // PROGRESS (t65 side effect, honest intermediate): the link now
-        // resolves — the bare id "648475" reaches the host root.
+        // FIXED (t70): the ## strip operator is lowered to the field path —
+        // subject looked up, pattern stripped, title no longer tainted.
         assert_eq!(items[0].link, "https://app.jjwxc.org/648475");
-        // KNOWN TAINT (not t65's to fix): title == link because field_json
-        // gets "" for `$.subject##…` (the ## strip operator never made it down
-        // to the list-field path) and parse_list_inner:516 falls back to the
-        // link when the title is empty. The correct title is 最幸福的一集;
-        // it un-taints once ## is lowered to the field path.
-        assert_eq!(
-            items[0].title, "https://app.jjwxc.org/648475",
-            "title currently tainted by the link fallback (want 最幸福的一集)"
-        );
+        assert_eq!(items[0].title, "最幸福的一集");
     }
 
     #[test]

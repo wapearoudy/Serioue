@@ -712,6 +712,27 @@ fn field_json(rule: &str, value: &Value, field_name: &str) -> String {
                 return rendered;
             }
         }
+        // Legado's `##` strip operator (`$.subject##</*.*?>`): `eval_json`
+        // above sees the whole string as one path and yields nothing, so the
+        // operator never fires on the list path — and the empty title then
+        // falls back to the link at the call site (t70: 晋江 title 串成 URL).
+        // Run the operator here: subject is looked up first, then stripped.
+        if rule.contains("##") {
+            let stripped = template::apply_regex_op(rule);
+            if stripped != rule {
+                // The subject half may itself be a path (`$.subject`).
+                let (subject, _) = stripped.split_once("##").unwrap_or((&stripped, ""));
+                let base = selector::eval_json(value, subject.trim())
+                    .into_iter()
+                    .find(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| stripped.clone());
+                let tail = rule.split_once("##").map(|x| x.1).unwrap_or("");
+                let out = template::apply_regex_op(&format!("{base}##{tail}"));
+                if !out.trim().is_empty() {
+                    return out;
+                }
+            }
+        }
     }
 
     // Standard CMS collections expose `/api.php/provide/vod`.

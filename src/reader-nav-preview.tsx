@@ -141,10 +141,27 @@ const SHELF: ShelfEntry[] = [
   },
 ];
 
+const SECOND = { id: "2", source_id: "s", title: "读过的第一篇", url: "https://demo.local/2", source_name: "甲源", viewed_at: 1700000200 };
 const HISTORY = [
-  { id: "1", source_id: "s", title: "读过的第一篇", url: "https://demo.local/1", source_name: "甲源", viewed_at: 1700000000 },
-  { id: "2", source_id: "s", title: "读过的第二篇", url: "https://demo.local/2", source_name: "甲源", viewed_at: 1700000100 },
+  { id: "1", source_id: "s", title: "读过的第一篇续", url: "https://demo.local/1", source_name: "甲源", viewed_at: 1700000100 },
+  SECOND,
+  // A 350-record history: the first page (100) hides the old tail, so
+  // "load more" and title search have something real to prove.
+  // NOTE: 史 is index 0..347; the far record sits at sorted position 303
+  // (2 fresh + 301 older first), i.e. past the old 300 hard cap.
+  ...Array.from({ length: 348 }, (_, i) => ({
+    id: `old-${i}`,
+    source_id: "s",
+    title: i === 299 ? "三百条外的远古篇" : `很久以前的第 ${i + 1} 篇`,
+    url: `https://demo.local/old-${i}`,
+    source_name: "甲源",
+    viewed_at: 1700000000 - (i + 1) * 100,
+  })),
 ];
+
+/** Every list_history limit the panel asked for, in order. */
+const historyLimits: number[] = [];
+(window as unknown as { __historyLimits: number[] }).__historyLimits = historyLimits;
 
 const MARKS: Highlight[] = [
   {
@@ -222,8 +239,14 @@ function installHarness() {
       case "continue_reading":
         if (FAIL_CONTINUE) throw new Error("continue_reading 失败");
         return CONTINUE;
-      case "list_history":
-        return HISTORY;
+      case "list_history": {
+        const limit = Number(args.limit) || 100;
+        historyLimits.push(limit);
+        // Newest-first, exactly like the backend: the two fresh records lead,
+        // so the original two-row assertions keep seeing them first.
+        const sorted = [...HISTORY].sort((a, b) => b.viewed_at - a.viewed_at);
+        return sorted.slice(0, limit);
+      }
       case "clear_history":
         probe.clearedHistory += 1;
         return null;
