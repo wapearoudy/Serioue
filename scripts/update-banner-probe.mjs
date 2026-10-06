@@ -17,6 +17,7 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { describeInstallerProvenance, pickNewestInstaller } from "./lib/installers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const exe = path.join(root, "src-tauri", "target", "release", "serious.exe");
@@ -31,38 +32,76 @@ const [cMaj, cMin, cPatch] = currentVersion.split(".").map(Number);
 const newVersion =
   process.env.SERIOUS_FAKE_UPDATE_VERSION ?? `${cMaj}.${cMin}.${cPatch + 1}`;
 
-// The real files are `...-setup.exe` with a **hyphen**; a `_setup\.exe` pattern
-// matches nothing and would report "no installer" with the files sitting there.
-const installers = (await readdir(bundle).catch(() => [])).filter((name) =>
-  /^Serious_.*setup\.exe$/i.test(name),
+// The installer is chosen by scripts/lib/installers.mjs and not here, because
+// choosing it is the kind of one-liner that is wrong for years and then wrong
+// quietly: `.sort().at(-1)` is a TEXT sort, so once the patch number reaches two
+// digits `Serious_0.1.10` sorts before `Serious_0.1.9` and the older installer is
+// served as the newest — with nothing to throw. The module carries that reasoning
+// and its self-test (`node scripts/lib/installers.mjs`).
+const { name: installerName, version: installerVersion, unparsed } = pickNewestInstaller(
+  await readdir(bundle).catch(() => []),
 );
-if (installers.length === 0) {
+if (!installerName) {
   console.error(
     `no installer in ${bundle}\n` +
       "build one first:\n" +
       "  $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content src-tauri\\serious-updater.key -Raw).Trim()\n" +
       "  $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''\n" +
       "  pnpm tauri build --bundles nsis\n" +
-      "the signing key is required — without it there is no .sig to sign the manifest with",
+      "the signing key is required — without it there is no .sig to sign the manifest with" +
+      (unparsed.length
+        ? `\nnote: ${unparsed.join(", ")} matched the installer glob but carries no version this ` +
+          "script can read, so it was NOT considered"
+        : ""),
   );
   process.exit(1);
 }
-const installer = path.join(bundle, installers.sort().at(-1));
+if (unparsed.length) {
+  console.log(
+    `note: ${unparsed.join(", ")} matched the installer glob but carries no version this ` +
+      "script can read, so it was NOT considered",
+  );
+}
+const installer = path.join(bundle, installerName);
 const sigFile = `${installer}.sig`;
 if (!existsSync(sigFile)) {
   console.error(
-    `no signature next to ${path.basename(installer)} — was the bundle built signed?`,
+    `no signature next to ${path.basename(installer)} — was the bundle built signed?\n` +
+      "rebuild it with the signing key (a bundle built without one produces no .sig):\n" +
+      "  $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content src-tauri\\serious-updater.key -Raw).Trim()\n" +
+      "  $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''\n" +
+      "  pnpm tauri build --bundles nsis",
   );
   process.exit(1);
 }
 console.log(`app version ${currentVersion}, serving ${newVersion} as the update`);
+console.log(`installer: ${installerName}`);
+
+// Say out loud which build is about to be served as "the new version". The served
+// version is a fixture, so a mismatch is expected and is a warning, not a failure —
+// the reasoning is in describeInstallerProvenance().
+const provenance = describeInstallerProvenance({
+  installerVersion,
+  appVersion: currentVersion,
+  servedVersion: newVersion,
+});
+console.log(provenance.message);
 
 const PORT = 19555;
 const ORIGIN = `https://127.0.0.1:${PORT}`;
-const tls = {
-  key: await readFile(path.join(root, "test-results", "local-cert", "key.pem")),
-  cert: await readFile(path.join(root, "test-results", "local-cert", "cert.pem")),
-};
+const certDir = path.join(root, "test-results", "local-cert");
+const keyPath = path.join(certDir, "key.pem");
+const certPath = path.join(certDir, "cert.pem");
+// Without this the next read throws a bare ENOENT that names a path but not the
+// one command that produces it — the other two update legs already say what to run.
+if (!existsSync(keyPath) || !existsSync(certPath)) {
+  console.error(
+    `missing ${existsSync(keyPath) ? certPath : keyPath} — run: ` +
+      "pwsh -NoProfile -File scripts/make-local-cert.ps1",
+  );
+  process.exit(1);
+}
+const tls = { key: await readFile(keyPath), cert: await readFile(certPath) };
 const sig = (await readFile(sigFile, "utf8")).trim();
 const size = statSync(installer).size;
 

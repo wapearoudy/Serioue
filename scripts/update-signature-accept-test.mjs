@@ -52,13 +52,18 @@ const [cMaj, cMin, cPatch] = CURRENT_VERSION.split(".").map(Number);
 const NEW_VERSION =
   process.env.SERIOUS_FAKE_UPDATE_VERSION ?? `${cMaj}.${cMin}.${cPatch + 1}`;
 
+// SERIOUS_FAKE_UPDATE_VERSION is the one variable on this side of the chain, and it
+// means the same thing everywhere: the version the fake channel serves.
+// scripts/sign-probe.ps1 reads that same variable and signs the bound probe with
+// exactly this version, so "signed for V" and "served as V" cannot drift apart the
+// way two differently-named variables would have (the retired SERIOUS_FAKE_VERSION
+// meant "pretend the app is V" and signed V+1 — one character of difference,
+// opposite arithmetic). A mismatch is checked for below anyway, because the probe
+// files outlive any one run.
+
 // Two signatures over the *same* bytes, made by the real key, differing only in
 // whether they are bound to a version. Both are valid; the point is to find out
 // which one the app's verifier accepts, rather than guessing.
-//
-// Note these are produced by scripts/sign-probe.ps1, which signs with
-// `--app-version <NEW_VERSION>`; if you override that version here, re-run the
-// probe script so the two agree.
 const ARTIFACTS = {
   // signed without --app-version: trusted comment is "timestamp:…\tfile:…"
   plain: { file: "probe.bin", name: "无版本绑定" },
@@ -82,6 +87,43 @@ const signatures = {};
 for (const [key, { file }] of Object.entries(ARTIFACTS)) {
   payloads[key] = await readFile(path.join(sigDir, file));
   signatures[key] = (await readFile(path.join(sigDir, `${file}.sig`), "utf8")).trim();
+}
+
+// ---------------------------------------------------------------------------
+// The two scripts must agree about which version this run serves.
+//
+// sign-probe.ps1 writes `version:<V>` into the bound probe's trusted comment; this
+// script serves `version: NEW_VERSION` in the manifest. Nothing else ties the two
+// files together, and the app accepts a signature bound to *any* version (measured
+// in t31: plain and bound both got past verification). So a probe left over from an
+// earlier release would keep this leg green while its "bound" case quietly stopped
+// testing the version actually being served — the "signed for 0.1.3, served as
+// 0.1.4" state this file was in when this check was added. Read the binding back
+// out of the .sig and compare; a mismatch is a failure, because a fixture that no
+// longer matches what it is a fixture for is a false signal, not a warning.
+// ---------------------------------------------------------------------------
+function trustedCommentOf(encodedSignature) {
+  const text = Buffer.from(encodedSignature.trim(), "base64").toString("utf8");
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.startsWith("trusted comment:")) ?? "";
+}
+
+const boundComment = trustedCommentOf(signatures.bound);
+const boundVersion = /(?:^|\s)version:(\S+)/.exec(boundComment)?.[1] ?? null;
+console.log(`bound probe is signed for: ${boundVersion ?? "(no version binding)"}`);
+if (boundVersion !== NEW_VERSION) {
+  console.error(
+    `the bound probe (${ARTIFACTS.bound.file}) is signed for ` +
+      `${boundVersion ?? "no version at all"}, but this run serves ${NEW_VERSION}\n` +
+      "re-sign the fixture so the two agree:\n" +
+      "  pwsh -NoProfile -File scripts/sign-probe.ps1\n" +
+      `(it signs for patch+1 of src-tauri/tauri.conf.json; set ` +
+      `SERIOUS_FAKE_UPDATE_VERSION=${NEW_VERSION} on BOTH this script and the probe ` +
+      "script to move them together)",
+  );
+  process.exit(1);
 }
 
 /** Valid base64, wrong content — the forged counterpart. */

@@ -31,6 +31,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { describeInstallerProvenance, pickNewestInstaller } from "./lib/installers.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = path.join(root, "test-results");
@@ -51,40 +52,78 @@ const NEW_VERSION =
   process.env.SERIOUS_FAKE_UPDATE_VERSION ??
   `${cMaj}.${cMin}.${cPatch + 1}`;
 
-// The installer is found by globbing. A path pinned to one version throws on the
-// next release, and gets deleted rather than fixed.
-//
-// Note the pattern: the real files are `...-setup.exe` with a **hyphen**, so a
-// `_setup\.exe` pattern matches nothing at all and reports "no installer" while
-// the files are sitting right there.
-const installers = (await readdir(bundle).catch(() => [])).filter((name) =>
-  /^Serious_.*setup\.exe$/i.test(name),
+// Recorded from here on, not from the app-driving section below: everything this
+// run observes about its own fixtures belongs in the log and the JSON, including
+// the provenance warning further down.
+const lines = [];
+const results = [];
+const record = (s) => {
+  console.log(s);
+  lines.push(s);
+};
+
+// The installer is found by globbing, and the newest one is chosen by
+// scripts/lib/installers.mjs. Both parts have a trap that is already paid for:
+// a path pinned to one version throws on the next release and gets deleted rather
+// than fixed, and `.sort().at(-1)` is a TEXT sort — `Serious_0.1.10_...` sorts
+// before `Serious_0.1.9_...`, so it would serve the OLDER installer as the newest
+// without throwing. (And the real file name uses a **hyphen**, `...-setup.exe`,
+// so the `_setup\.exe` pattern this repo once used matched nothing at all and
+// reported "no installer" with the file sitting right there.)
+const { name: installerName, version: installerVersion, unparsed } = pickNewestInstaller(
+  await readdir(bundle).catch(() => []),
 );
-if (installers.length === 0) {
+if (!installerName) {
   console.error(
     `no installer in ${bundle}\n` +
       "build one first:\n" +
       "  $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content src-tauri\\serious-updater.key -Raw).Trim()\n" +
       "  $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''\n" +
       "  pnpm tauri build --bundles nsis\n" +
-      "the signing key is required, otherwise no .sig is produced and there is nothing to verify",
+      "the signing key is required, otherwise no .sig is produced and there is nothing to verify" +
+      (unparsed.length
+        ? `\nnote: ${unparsed.join(", ")} matched the installer glob but carries no version this ` +
+          "script can read, so it was NOT considered"
+        : ""),
   );
   process.exit(1);
 }
-if (installers.length > 1) {
-  console.log(`several installers present, using the newest: ${installers.join(", ")}`);
+if (unparsed.length) {
+  record(
+    `note: ${unparsed.join(", ")} matched the installer glob but carries no version this ` +
+      "script can read, so it was NOT considered",
+  );
 }
-const installer = path.join(bundle, installers.sort().at(-1));
+const installer = path.join(bundle, installerName);
 const sigFile = `${installer}.sig`;
 if (!existsSync(sigFile)) {
   console.error(
     `no signature next to ${path.basename(installer)} (${path.basename(sigFile)})\n` +
-      "the bundle was built without a signing key, so there is nothing to verify",
+      "the bundle was built without a signing key, so there is nothing to verify\n" +
+      "rebuild it with the signing key:\n" +
+      "  $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content src-tauri\\serious-updater.key -Raw).Trim()\n" +
+      "  $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''\n" +
+      "  pnpm tauri build --bundles nsis",
   );
   process.exit(1);
 }
-console.log(`app version ${CURRENT_VERSION}, serving ${NEW_VERSION} as the update`);
-console.log(`installer: ${path.basename(installer)}`);
+record(`app version ${CURRENT_VERSION}, serving ${NEW_VERSION} as the update`);
+record(`installer: ${path.basename(installer)}`);
+
+// Which build is about to be served as "the new version". The served version is a
+// fixture, so a mismatch with tauri.conf.json is expected — it is a warning, not a
+// failure, and the reasoning for that is in describeInstallerProvenance(). What is
+// not allowed is the reader not knowing.
+const provenance = describeInstallerProvenance({
+  installerVersion,
+  appVersion: CURRENT_VERSION,
+  servedVersion: NEW_VERSION,
+});
+record(provenance.message);
+results.push({
+  case: "installer-provenance",
+  observed: `bundle has ${installerName}; tauri.conf.json says ${CURRENT_VERSION}; serving as ${NEW_VERSION}`,
+});
 
 const PORT = 19555;
 const ORIGIN = `https://127.0.0.1:${PORT}`;
@@ -434,15 +473,8 @@ const child = spawn(exe, [], {
   stdio: ["ignore", "pipe", "inherit"],
 });
 
-const lines = [];
-const record = (s) => {
-  console.log(s);
-  lines.push(s);
-};
-
 let browser = null;
 let failed = false;
-const results = [];
 
 try {
   const deadline = Date.now() + 30000;
