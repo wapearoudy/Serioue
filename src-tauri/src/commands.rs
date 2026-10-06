@@ -935,7 +935,6 @@ fn validate_settings(mut s: Settings) -> AppResult<Settings> {
     if !matches!(s.reader_font.as_str(), "" | "serif" | "sans") {
         s.reader_font = String::new();
     }
-    s.page_size = s.page_size.clamp(10, 300);
     Ok(s)
 }
 
@@ -1105,15 +1104,6 @@ mod tests {
             let v = validate_settings(Settings { reader_font: font.into(), ..Default::default() }).unwrap();
             assert_eq!(v.reader_font, font);
         }
-    }
-
-    #[test]
-    fn page_size_is_bounded_too() {
-        let small = validate_settings(Settings { page_size: 0, ..Default::default() }).unwrap();
-        assert_eq!(small.page_size, 10);
-        let large =
-            validate_settings(Settings { page_size: 100_000, ..Default::default() }).unwrap();
-        assert_eq!(large.page_size, 300);
     }
 
     #[test]

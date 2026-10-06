@@ -64,7 +64,6 @@ const SHELF = [
 
 const SETTINGS: Settings = {
   concurrent_checks: true,
-  page_size: 60,
   cache_enabled: false,
   repo_base: "https://www.yck2026.fun",
   user_agent: "",

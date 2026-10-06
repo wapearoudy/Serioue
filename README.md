@@ -449,18 +449,14 @@ Space selected 乙源
 - **保存失败会回滚**，不会留在一个「看起来保存了其实没存」的中间态；
   后端拒绝时回滚的是**字段和仓库地址两处**。
 - **保存成功有提示**，而且提示会自己消失 —— 一直挂着的「已保存」比没有更吵。
-- **数字框可以清空重输**（不是只能按加号往上点）。
-- **范围校验在前后端都有**：输入越界时字段被夹回合法值，磁盘上的值不变；
-  但**后端自己的上限值仍然接受并保存**，不会因为「看起来太大」而吞掉合法配置。
+- **仓库地址可以在失去焦点时保存**，只有真正改动时才写盘。
 
 实测（`node scripts/reader-settings-test.mjs`）：
 
 ```
 rolled back: field shows …, disk still has …
-the note disappeared on its own; disk has page_size=42
-cleared and retyped 42; stored=42
-range: … ; stored value stayed …, field shows …
-300 (the backend's own ceiling) is still accepted and stored
+the note disappeared on its own; the write reached the harness
+repo address rolled back
 ```
 
 ## 视频播放

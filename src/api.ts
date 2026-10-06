@@ -171,7 +171,6 @@ export interface Collection {
 
 export interface Settings {
   concurrent_checks: boolean;
-  page_size: number;
   cache_enabled: boolean;
   repo_base: string;
   user_agent: string;

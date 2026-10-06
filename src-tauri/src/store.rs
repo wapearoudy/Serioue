@@ -152,8 +152,6 @@ pub struct HistoryEntry {
 pub struct Settings {
     #[serde(default = "default_true")]
     pub concurrent_checks: bool,
-    #[serde(default = "default_items")]
-    pub page_size: usize,
     #[serde(default)]
     pub cache_enabled: bool,
     #[serde(default)]
@@ -229,9 +227,6 @@ fn highlight_id(url: &str, text: &str) -> String {
 fn default_true() -> bool {
     true
 }
-fn default_items() -> usize {
-    60
-}
 fn default_font_size() -> u8 {
     17
 }
@@ -252,7 +247,6 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             concurrent_checks: true,
-            page_size: default_items(),
             cache_enabled: false,
             repo_base: "https://www.yck2026.fun".to_string(),
             repo_paths: crate::repo::RepoPaths::default(),
@@ -1113,7 +1107,8 @@ fn test_dir(tag: &str) -> PathBuf {
     #[test]
     fn settings_from_an_older_install_get_reader_defaults() {
         // A settings.json written before reader preferences existed must still
-        // load, with sensible values rather than zeroes.
+        // load, with sensible values rather than zeroes. Unknown keys
+        // (including the removed `page_size`) are ignored by serde.
         let dir = test_dir("settings-legacy");
         std::fs::write(
             dir.join("settings.json"),
@@ -1123,7 +1118,6 @@ fn test_dir(tag: &str) -> PathBuf {
         let reopened = Store::new(dir.clone()).unwrap();
         let s = reopened.settings();
         assert!(!s.concurrent_checks);
-        assert_eq!(s.page_size, 30);
         assert_eq!(s.reader_font_size, 17);
         assert_eq!(s.reader_line_height, 180);
         assert_eq!(s.reader_theme, "dark");

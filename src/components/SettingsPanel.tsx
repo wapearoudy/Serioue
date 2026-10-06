@@ -3,19 +3,6 @@ import { api, errorMessage, type Collection, type Settings } from "../api";
 import { UpdateSettings } from "./Update";
 import { Banner, Spinner, compactNumber } from "./ui";
 
-/**
- * Bounds for 每页条数.
- *
- * These match the backend's own clamp in `validate_settings`
- * (`page_size.clamp(10, 300)`), and they have to: a UI that accepted more than
- * the backend keeps would let a person type 400, watch the save succeed, and
- * then find the list still paging at 300 — a change nobody told them about.
- * Refusing what the app cannot honour is the panel's job, and the real range is
- * exactly what the app honours.
- */
-const PAGE_MIN = 10;
-const PAGE_MAX = 300;
-
 /** How long a "已保存" confirmation stays on screen. */
 const SAVED_NOTE_MS = 2500;
 
@@ -39,10 +26,6 @@ export function SettingsPanel({
   /** What is really stored. The screen can be ahead of it while typing, and a
    *  failed save has to be rolled back to *this*, not to whatever was on screen. */
   const stored = useRef<Settings | null>(null);
-  /** The number field's own text, so it can be emptied and retyped. */
-  const [pageDraft, setPageDraft] = useState("");
-  /** Why a field was refused, next to the field rather than in a banner. */
-  const [fieldError, setFieldError] = useState<{ field: string; text: string } | null>(null);
 
   const load = useCallback(() => {
     api
@@ -53,7 +36,6 @@ export function SettingsPanel({
         // optimistically as the user types and would make the rollback a no-op.
         stored.current = loaded;
         setSettings(loaded);
-        setPageDraft(String(loaded.page_size));
       })
       .catch((e) => {
         setError(errorMessage(e));
@@ -96,35 +78,9 @@ export function SettingsPanel({
       // Roll the screen back to what is really stored — if that is not known
       // yet, re-read it rather than leave the failed value on screen.
       if (previous) setSettings(previous);
-      if (previous) setPageDraft(String(previous.page_size));
       setError(`保存失败，已恢复原值：${errorMessage(e)}`);
       setRetry(() => () => void save(next, label));
     }
-  }
-
-  /** Validate the number field without substituting a value the user never typed. */
-  function commitPageSize(current: Settings) {
-    const raw = pageDraft.trim();
-    const value = Number(raw);
-    if (!raw || !Number.isFinite(value) || !Number.isInteger(value)) {
-      setFieldError({
-        field: "page_size",
-        text: `「每页条数」需要是一个整数，现在是「${raw || "空"}」，已经恢复成原来的 ${current.page_size}。`,
-      });
-      setPageDraft(String(current.page_size));
-      return;
-    }
-    if (value < PAGE_MIN || value > PAGE_MAX) {
-      setFieldError({
-        field: "page_size",
-        text: `每页条数要在 ${PAGE_MIN} 到 ${PAGE_MAX} 之间，现在填的是 ${value}，没有保存，已经恢复成原来的 ${current.page_size}。`,
-      });
-      setPageDraft(String(current.page_size));
-      return;
-    }
-    setFieldError(null);
-    if (value === current.page_size) return;
-    void save({ ...current, page_size: value }, `每页条数 ${value}`);
   }
 
   async function removeAll() {
@@ -222,24 +178,6 @@ export function SettingsPanel({
                 void save({ ...settings, repo_base: settings.repo_base }, "仓库地址");
               }}
             />
-          </div>
-
-          <div className="field">
-            <label>每页条数</label>
-            <input
-              type="number"
-              data-settings-field="page_size"
-              min={PAGE_MIN}
-              max={PAGE_MAX}
-              value={pageDraft}
-              onChange={(e) => setPageDraft(e.target.value)}
-              onBlur={() => commitPageSize(settings)}
-            />
-            {fieldError?.field === "page_size" && (
-              <p data-settings-field-error="page_size" style={{ color: "var(--warn)", fontSize: 12, marginTop: 4 }}>
-                {fieldError.text}
-              </p>
-            )}
           </div>
 
           <div className="field">
