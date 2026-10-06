@@ -1,12 +1,41 @@
 // Diagnostic: why does the artifact signature not verify while the global one does?
-import { readFile } from "node:fs/promises";
+//
+// Kept because it is what pinned down two things that are otherwise invisible:
+// the public key in `tauri.conf.json` pairs with the signing key, and the
+// artifact signature is over **BLAKE2b-512 of the file**, not the file's bytes
+// (minisign's upper-case "ED" algorithm means prehashed). Getting that second one
+// wrong makes every release look unsigned while the app itself installs fine.
+//
+// The installer is found by globbing rather than by naming a version: a path
+// pinned to 0.1.2 would throw on 0.1.4 and be deleted before anyone noticed it
+// had stopped working.
+import { readFile, readdir } from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const installer = path.join(root, "src-tauri", "target", "release", "bundle", "nsis", "Serious_0.1.2_x64-setup.exe");
+const bundle = path.join(root, "src-tauri", "target", "release", "bundle", "nsis");
+const candidates = (await readdir(bundle).catch(() => [])).filter(
+  (name) => /^Serious_.*_setup\.exe$/.test(name),
+);
+if (candidates.length === 0) {
+  console.error(
+    `no installer in ${bundle} — build one first: pnpm tauri build --bundles nsis\n` +
+      "(with TAURI_SIGNING_PRIVATE_KEY set, or the .sig will not be produced)",
+  );
+  process.exit(1);
+}
+if (candidates.length > 1) {
+  console.log(`several installers present, using the newest: ${candidates.join(", ")}`);
+}
+const installer = path.join(bundle, candidates.sort().at(-1));
 const sigFile = `${installer}.sig`;
+console.log(`installer       : ${path.basename(installer)}`);
+if (!await readFile(sigFile).catch(() => null)) {
+  console.error(`no .sig next to it (${path.basename(sigFile)}) — was it built signed?`);
+  process.exit(1);
+}
 
 const conf = JSON.parse(await readFile(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"));
 const pubText = Buffer.from(conf.plugins.updater.pubkey.trim(), "base64").toString("utf8");
