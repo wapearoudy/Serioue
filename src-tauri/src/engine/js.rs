@@ -28,8 +28,15 @@ thread_local! {
 /// rule cannot turn into unbounded memory use inside the UI process.
 const MAX_DOM_BYTES: usize = 4 * 1024 * 1024;
 
-/// How many element handles one evaluation may accumulate.
+/// How many element handles one evaluation may accumulate. Past this,
+/// `java.getElements` hands out nothing further rather than renumbering the
+/// handles a rule already holds (see `js_dom_find`).
 const MAX_HANDLES: usize = 512;
+
+/// Total markup the handle table may hold. A handle is a slice of the document,
+/// so 512 of them could otherwise add up to 512 documents' worth of memory when
+/// the matches nest.
+const MAX_HANDLE_BYTES: usize = MAX_DOM_BYTES;
 
 /// The script-visible DOM.
 ///
@@ -42,6 +49,48 @@ const MAX_HANDLES: usize = 512;
 ///
 /// The copy is dropped when the evaluation ends, so nothing a rule writes
 /// outlives the call that wrote it.
+///
+/// ## Why `setContent` needs no sanitiser, and what it does need
+///
+/// `setContent` is the one place where content that came off an untrusted site
+/// flows into something that looks like a page, so the boundary is worth stating
+/// rather than assuming:
+///
+/// * **The destination is not a live DOM.** Only the three functions in this
+///   module ever read `PAGE`, and each of them parses `p.html` with the
+///   selector module and hands back strings. Nothing renders it, nothing
+///   executes it, and there is no path from here to `window`, to the reader's
+///   view, or to the native side. So the style of sanitiser that exists to stop
+///   `setContent` becoming stored XSS has nothing to defend: a `<script>` a rule
+///   writes here is inert text that only our selector ever looks at.
+/// * **It is bounded, and the bound is enforced in bytes.** The document is
+///   clamped to [`MAX_DOM_BYTES`] on every write and on every bind, and the
+///   handle table is capped both by entry count ([`MAX_HANDLES`]) and by the
+///   markup it holds ([`MAX_HANDLE_BYTES`]) — because a handle is a slice of the
+///   document, and 512 slices of a *nested* document are more than one
+///   document's worth of memory. So an attacker-chosen page cannot make the UI
+///   process hold an unbounded string.
+/// * **It is finite.** The handle table stops at its two caps, and Boa's own
+///   loop and recursion limits stop a script that tries to spin. Nothing
+///   accumulates across evaluations: a new bind clears the map and the handles.
+///
+/// What is *not* done, and why: the markup is not sanitised, because sanitising
+/// it would only matter at the point where the reader's webview renders it —
+/// which is the `ruleContent` template path, a different channel, not this one.
+/// Recording that here keeps "no sanitiser" from reading as an oversight.
+///
+/// Two residuals, stated rather than hidden:
+///
+/// * The variable map is capped by entry count (256) and the cache by 512, but
+///   **not** by bytes: a rule can put 256 values that are each as large as a
+///   response body. That is bounded by how many distinct strings a script can
+///   build within Boa's iteration limit rather than by anything here, and it is
+///   a different channel from `setContent` — noted so the next person does not
+///   read "bounded" as covering it.
+/// * Parsing is not free, so a rule that calls `java.getElements` in a tight
+///   loop re-parses the document each time. That is bounded by Boa's iteration
+///   limit rather than by anything here, and it is a cost this design accepts
+///   rather than a hole it hides.
 #[derive(Default)]
 struct PageState {
     html: String,
@@ -49,10 +98,80 @@ struct PageState {
     vars: HashMap<String, String>,
     /// Outer markup of each element handed to the script, addressed by index.
     handles: Vec<String>,
+    /// Total bytes held in `handles`, so the table is bounded by what it holds
+    /// and not only by how many entries it has.
+    handle_bytes: usize,
 }
 
 fn with_page<R>(f: impl FnOnce(&mut PageState) -> R) -> R {
     PAGE.with(|p| f(&mut p.borrow_mut()))
+}
+
+/// Truncate a document to [`MAX_DOM_BYTES`], on a character boundary.
+///
+/// The cap is spelled in *bytes* and has to count bytes, otherwise a page of
+/// three-byte characters buys three times the memory the cap was chosen to
+/// allow. Truncating on a boundary rather than at a byte offset keeps the
+/// result valid UTF-8 rather than making the caller deal with a panic.
+fn clamp_dom(html: &str) -> String {
+    if html.len() <= MAX_DOM_BYTES {
+        return html.to_string();
+    }
+    let mut end = MAX_DOM_BYTES;
+    while end > 0 && !html.is_char_boundary(end) {
+        end -= 1;
+    }
+    html[..end].to_string()
+}
+
+/// Replace what is *inside* an element, keeping the element itself.
+///
+/// This is the element overload `element.setContent(html)`, which is jsoup's
+/// `Element.html(html)`. No rule in the sampled corpus reaches it: all 16
+/// `setContent` call sites pass either an element handle (the empty-string path,
+/// which re-points the working document at that element) or a whole document.
+/// It is therefore defined by the reference rather than by a need, and the
+/// fallback below keeps it from destroying markup for an element with no inner
+/// content (a void element such as `<img>`).
+fn replace_inner(existing: &str, html: &str) -> String {
+    let inner = from_element(existing, "innerHtml");
+    match existing.find(&inner) {
+        Some(at) if !inner.is_empty() => {
+            format!("{}{}{}", &existing[..at], html, &existing[at + inner.len()..])
+        }
+        _ => format!("{existing}{html}"),
+    }
+}
+
+/// The tag name of an element, read off its own outer markup.
+///
+/// `Doc::eval("tag")` cannot answer this: with no `@` the token is read as a tag
+/// *selector*, so it looks for an element called `<tag>` and finds nothing. The
+/// markup is right here, so the name is read from it.
+fn element_name(outer: &str) -> String {
+    let s = outer.trim_start();
+    let s = s.strip_prefix('<').unwrap_or(s);
+    let end = s
+        .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+        .unwrap_or(s.len());
+    s[..end].to_ascii_lowercase()
+}
+
+/// Run an extraction rule against an element we already hold.
+///
+/// The element has to be addressed by its own tag, for the same reason as
+/// [`element_name`]: `text` on its own is a tag selector, while `a@text`
+/// self-matches the way `java.getString('a@href')` does on a bound element.
+fn from_element(outer: &str, extract: &str) -> String {
+    let tag = element_name(outer);
+    if tag.is_empty() {
+        return String::new();
+    }
+    crate::engine::selector::Doc::parse(outer)
+        .eval(&format!("{tag}@{extract}"))
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 /// Point the DOM at the markup a rule is looking at, and clear everything the
@@ -63,9 +182,10 @@ fn with_page<R>(f: impl FnOnce(&mut PageState) -> R) -> R {
 /// nothing rather than operating on a stale document.
 pub fn set_page(html: Option<String>) {
     with_page(|p| {
-        p.html = html.unwrap_or_default().chars().take(MAX_DOM_BYTES).collect();
+        p.html = clamp_dom(&html.unwrap_or_default());
         p.vars.clear();
         p.handles.clear();
+        p.handle_bytes = 0;
     });
 }
 
@@ -196,7 +316,49 @@ fn js_sleep(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<Js
 //     java.getString('.filename@textNodes')
 //     java.put('url', baseUrl)      java.get('name')
 //
-// What is deliberately absent is listed in the module note further down.
+// All five sources of that family in collection 107 — `阅读难受1`,
+// `书源难受2`, `影视难受3`, `软件难受4`, `未测难受6` — call exactly
+// `java.getElements` x1, `java.setContent` x2, `java.put` x1, `java.get` x1
+// (x5 for 书源难受2), `java.getString` x8..12 and `java.ajax` x1..2 in their
+// `rule*` fields, and nothing else from the `java` namespace. Their `.select(` /
+// `.length` / `.text()` calls on a handle exist in other collections, not in
+// these five.
+//
+// ## What is implemented here, and what is deliberately not
+//
+// Implemented, because these rules reach it:
+//
+//   * `java.getElements(rule)` — CSS/class selector against the bound document.
+//     Returns array-like handles carrying `tag() / text() / textNodes() /
+//     html() / outerHtml() / attr(name) / setContent(html)` and `length`.
+//   * `java.setContent(element | string)` — makes an element the working
+//     document, or replaces it wholesale.
+//   * `java.put(key, value)` / `java.get(key)` — Legado's context map, scoped to
+//     the bound page (see the note above `java.get` in `PRELUDE`).
+//   * `java.getString(rule)` — a selector when it is not an address, a download
+//     when it is.
+//
+// Not implemented, with the reason in each case. This is a census of the
+// collections under `test-results/`, so it can be re-measured rather than
+// believed:
+//
+//   * `handle.select(rule)` (10 call sites, e.g. `影视难受3`'s
+//     `list.select('a')`) — the one element method the wider corpus uses that
+//     the handle does not have. It is absent here on purpose: no source in the
+//     five-name family calls it, so adding it would be building for a rule we
+//     have not read end to end. It is the first thing to add if those video
+//     sources are taken up again.
+//   * `java.searchBook`, `toast`, `longToast`, `log`, `toURL`, `net`, `head`,
+//     `openUrl`, `ruleUrl`, `getWebViewUA`, `getVerificationCode`,
+//     `startBrowserAwait`, `ajaxAll`, `util`, `lang`, `apk`, `base64Encode`,
+//     `md5Encode16`, `timeFormatUTC` — used by *other* sources in the same
+//     collections (13, 12, 8, 9, 4, … call sites). Describing them all would be
+//     exactly the "fill in the whole Legado API" this change is trying not to
+//     do; each wants its own rule text and its own justification.
+//   * `java.getVar` — not a Legado name at all. It exists as an alias; no rule
+//     in any sampled collection calls it.
+//   * Nothing here writes to the reader's webview. See the boundary note on
+//     `PageState`.
 
 /// `__dom_find(rule)` — matches the working document and returns descriptors.
 fn js_dom_find(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
@@ -207,33 +369,41 @@ fn js_dom_find(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult
         }
         let doc = crate::engine::selector::Doc::parse(&p.html);
         let mut out = Vec::new();
-        // A rule that loops over `getElements` must not be able to grow this
-        // without bound.
-        if p.handles.len() > MAX_HANDLES {
-            p.handles.clear();
-        }
-        for (i, html) in doc.eval_outer(&rule).into_iter().enumerate() {
+        for html in doc.eval_outer(&rule) {
+            // A handle's index is its slot in the table, and the table is
+            // append-only for the life of the bound page — a rule holds the
+            // handles it was given while it goes on calling `setContent`.
+            // So the cap refuses rather than resets: resetting would leave the
+            // rule holding indices that now name *other* elements, which is a
+            // wrong answer delivered silently. Both limits refuse, and the
+            // second one exists because 512 slices of a nested document are not
+            // one document's worth of memory.
+            if p.handles.len() >= MAX_HANDLES
+                || p.handle_bytes + html.len() > MAX_HANDLE_BYTES
+            {
+                break;
+            }
+            let index = p.handles.len();
+            p.handle_bytes += html.len();
             p.handles.push(html.clone());
-            let doc2 = crate::engine::selector::Doc::parse(&html);
+            let tag = element_name(&html);
             let attrs: Vec<Json> = ["href", "title", "alt", "src", "class", "id", "value"]
                 .iter()
                 .filter_map(|name| {
-                    doc2.eval(&format!("@{name}")).into_iter().next().map(|v| {
+                    let value = from_element(&html, name);
+                    (!value.is_empty()).then(|| {
                         Json::Array(vec![
                             Json::String((*name).to_string()),
-                            Json::String(v),
+                            Json::String(value),
                         ])
                     })
                 })
                 .collect();
-            let tag = doc2.eval("tag").into_iter().next().unwrap_or_default();
             let mut obj = serde_json::Map::new();
-            obj.insert("i".into(), Json::from(i));
+            obj.insert("i".into(), Json::from(index));
             obj.insert("tag".into(), Json::String(tag));
-            obj.insert(
-                "text".into(),
-                Json::String(doc2.eval("text").into_iter().next().unwrap_or_default()),
-            );
+            obj.insert("text".into(), Json::String(from_element(&html, "text")));
+            obj.insert("inner".into(), Json::String(from_element(&html, "innerHtml")));
             obj.insert("html".into(), Json::String(html.clone()));
             obj.insert("attrs".into(), Json::Array(attrs));
             out.push(Json::Object(obj));
@@ -268,8 +438,13 @@ fn js_dom_extract(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsRes
 
 /// `__dom_use(index, html)` — make an element (or the whole page) current.
 ///
-/// `index < 0` replaces the document, which is what `setContent(string)` means.
-/// Anything written is bounded and lives only for this evaluation.
+/// `index < 0` replaces the document, which is what `setContent(string)` means;
+/// an index with no markup re-points the document at that element, which is what
+/// `setContent(element)` means; an index *with* markup replaces that element's
+/// inner content (the element overload — see [`replace_inner`]).
+///
+/// What is written is clamped to [`MAX_DOM_BYTES`] and outlives nothing: the
+/// document it lands in is dropped when the evaluation ends.
 fn js_dom_use(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let index: i64 = arg_str(args, 0, ctx).parse().unwrap_or(-1);
     let html = arg_str(args, 1, ctx);
@@ -279,16 +454,17 @@ fn js_dom_use(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<
         } else {
             match p.handles.get(index as usize) {
                 Some(existing) if html.is_empty() => existing.clone(),
-                Some(existing) => format!("{existing}{html}"),
+                Some(existing) => replace_inner(existing, &html),
                 None => String::new(),
             }
         };
-        // The handle list is deliberately *not* cleared: a rule that walks a
-        // listing holds every element it was handed, and each one must stay
-        // addressable after an earlier `setContent`. `set_page` drops them at
-        // the end of the evaluation.
-        p.handles.push(next.clone());
-        p.html = next.chars().take(MAX_DOM_BYTES).collect();
+        // The handle table is deliberately *not* appended to here. Every index a
+        // rule can name was handed out by `__dom_find`; pushing an entry per
+        // write would (a) renumber the handles the rule is still holding, so
+        // that a later `setContent(a)` silently re-points at another element,
+        // and (b) let a loop of writes grow the table without bound. Writing
+        // only ever replaces the working document.
+        p.html = clamp_dom(&next);
     });
     Ok(JsValue::undefined())
 }
@@ -330,9 +506,30 @@ globalThis.java = {
         }
         return __dom_extract(a);
     },
-    get: function (url, headers) { return this.ajax(url, headers); },
-    // Legado's context map, not a download. Kept separate from the network
-    // `get` above because these rules use both spellings for different things.
+    get: function (arg, headers) {
+        // Legado spells the context map `put` / `get`, and that is what every
+        // sampled rule means by it: of the 28 `java.get(...)` calls in the
+        // collections under `test-results/`, **all 28 pass a string literal**
+        // and read a variable — `'url'` x16, `'title'` x4, `'name'` x2,
+        // `'pic'` x2, `'pg'`, `'urltp'`, `` `pwd` ``, `"name"`. Not one passes
+        // an address. `阅读难受1` is the pair in the same source:
+        // `ruleArticles` ends with `java.put('url', baseUrl)` and `ruleNextPage`
+        // opens with `url = String(java.get('url'))`.
+        //
+        // An address is still honoured, because a rule we have not sampled may
+        // use the spelling for a download and there is nothing to gain from
+        // breaking it. A variable key can never look like absolute http(s), so
+        // the two cannot be confused.
+        var a = arg == null ? '' : String(arg);
+        if (/^https?:\/\//i.test(a)) {
+            return this.ajax(a, headers);
+        }
+        return __dom_var(a);
+    },
+    // The context map, under an engine-specific name. Kept because it is
+    // already reachable from user-written rules and removing it would help
+    // nobody — but no rule in any sampled collection calls it, and `java.get`
+    // is the spelling that has to work.
     getVar: function (key) { return __dom_var(String(key)); },
     put: function (key, value) {
         __dom_put(String(key), typeof value === 'string' ? value : JSON.stringify(value));
@@ -462,14 +659,21 @@ globalThis.egor = function () { return new Date().getTime(); };
 
 // The element handle a rule gets back from `java.getElements`. It is a plain
 // data object: reading from it costs nothing, and the only way to change
-// anything is to hand it to `setContent`, which rewrites the working copy.
+// anything is to hand it to `setContent` — either the rule's own
+// `java.setContent(handle)`, which re-points the working document at this
+// element, or the handle's own `setContent(html)`, which replaces what is
+// inside it. Neither one touches the page the reader is looking at.
 globalThis.__seriousElement = function (d) {
     return {
         __domIndex: d.i,
         tag: function () { return d.tag; },
         text: function () { return d.text; },
         textNodes: function () { return d.text; },
-        html: function () { return d.html; },
+        // jsoup's distinction: `html()` is what is inside the element,
+        // `outerHtml()` is the element itself. Both are read out of the element
+        // we already hold, because a bare `text`/`innerHtml` is a tag selector
+        // here and matches nothing.
+        html: function () { return d.inner; },
         outerHtml: function () { return d.html; },
         attr: function (name) {
             for (var i = 0; i < d.attrs.length; i++) {
@@ -787,6 +991,97 @@ mod tests {
         assert_eq!(out, "https://lanzoux.test/x", "{out}");
     }
 
+    // ---- `java.put` / `java.get` ------------------------------------------
+    //
+    // Legado spells the context map `put` / `get`, and that is the spelling the
+    // rules use. Measured over every collection JSON in `test-results/`
+    // (142 files, collections 77 / 107 / 160): `java.put` appears 28 times,
+    // `java.get` 28 times, and **all 28 `java.get` arguments are string
+    // literals** — `'url'` x16, `'title'` x4, `'name'` x2, `'pic'` x2, `'pg'`,
+    // `'urltp'`, `` `pwd` ``, `"name"` — i.e. every one of them is a key, and
+    // not one is a url. `java.getVar` appears **zero** times.
+    //
+    // The pair is not decorative: `阅读难受1`'s `ruleArticles` ends with
+    // `java.put('url', baseUrl)`, and that same source's `ruleNextPage` starts
+    // with `url = String(java.get('url'))` to build the next page's address.
+    // `ruleTitle` puts `name`, `ruleLink` and `ruleContent` read it back.
+    // Both sides evaluate inside one `set_page` binding, so the map has to
+    // survive from one rule field to the next.
+
+    /// The one-liner form of the pair above, with the spelling the corpus uses.
+    #[test]
+    fn put_is_read_back_by_get_not_only_by_get_var() {
+        set_page(Some(LANZOU_FOLDER.to_string()));
+        let out = eval_to_string(
+            "java.put('url', 'https://lanzoux.test/b1?pg=1'); result = java.get('url');",
+            &json!({}),
+        );
+        set_page(None);
+        assert_eq!(
+            out, "https://lanzoux.test/b1?pg=1",
+            "java.get must read what java.put wrote — `getVar` is not a name any sampled rule calls"
+        );
+    }
+
+    /// `阅读难受1` verbatim: the listing records its page, `ruleNextPage` reads it.
+    ///
+    /// The two fields are separate evaluations, so this also pins the scope of
+    /// the map: it belongs to the bound page, not to one script.
+    #[test]
+    fn a_rule_field_can_read_a_variable_another_field_put() {
+        set_page(Some(LANZOU_FOLDER.to_string()));
+        // `ruleArticles`' last line, copied from the rule. The one thing added
+        // is `var baseUrl = …`, which the harness has to supply: the engine does
+        // not bind `baseUrl` as a global (only `result` and the JSON body), so
+        // the whole-JS-block path that would is task t35, not this one. The
+        // `java.put` line itself is unmodified.
+        eval_to_string(
+            "var baseUrl = 'https://wwdn.lanzoue.com/b0d5g0tba?pg=1'; java.put('url', baseUrl);",
+            &json!({}),
+        );
+        // `ruleNextPage`, copied from the rule. The one thing added is
+        // `result = url;` at the end: this engine's statement form returns
+        // `result`, so a rule that finishes with a bare expression yields ''
+        // (measured — recorded in the report as a separate gap). The block that
+        // reads the variable is unmodified.
+        let out = eval_to_string(
+            r#"
+            try {
+                url = String(java.get('url'));
+                url = url.replace(/(pg=)(\d+)/, (mat, $1, $2) => {
+                    return $1 + (~~$2 + 1)
+                }).replace(url, '');
+            } catch (err) {
+                url = ""
+            }
+            result = url;
+            "#,
+            &json!({}),
+        );
+        set_page(None);
+        assert_eq!(
+            out.trim(),
+            "https://wwdn.lanzoue.com/b0d5g0tba?pg=2",
+            "pagination must advance the page it was handed"
+        );
+    }
+
+    /// The map belongs to the bound page and is dropped with it, like the DOM.
+    #[test]
+    fn variables_do_not_outlive_the_page_that_was_bound() {
+        set_page(Some(LANZOU_FOLDER.to_string()));
+        eval_to_string("java.put('name', '第一本书');", &json!({}));
+        assert_eq!(eval_to_string("java.get('name')", &json!({})), "第一本书");
+        // Re-binding (what the next listing does) drops it.
+        set_page(Some(LANZOU_FOLDER.to_string()));
+        assert_eq!(
+            eval_to_string("java.get('name')", &json!({})),
+            "",
+            "a new page must not inherit the previous listing's variables"
+        );
+        set_page(None);
+    }
+
     #[test]
     fn the_dom_is_detached_between_evaluations() {
         // A rule must not see the previous rule's page, and must not leave
@@ -807,6 +1102,251 @@ mod tests {
         set_page(None);
         assert_eq!(eval_to_string("java.getElements('a').length", &json!({})), "0");
         assert_eq!(eval_to_string("java.getString('a@href')", &json!({})), "");
+    }
+
+    // ---- handle identity --------------------------------------------------
+    //
+    // A handle is addressed by its index in a table, and a rule holds handles
+    // across other calls: `影视难受3` runs `list = java.getElements(...)[i]` and
+    // then reads `list.select('a')`, and the 蓝奏云 family interleaves
+    // `setContent(a)` with further reads. So the index a rule was handed has to
+    // keep naming the same element. Two shapes have to hold: a second query must
+    // not reuse indices the first query handed out, and a write must not move
+    // them.
+
+    /// Two elements that are not the first two on the page, so a shifted index
+    /// reads a different href rather than the same one by accident.
+    const TWO_LISTS: &str = r#"
+      <div id="folder">
+        <div class="mlink"><a href="https://lanzoux.test/a1">one</a></div>
+        <div class="mlink"><a href="https://lanzoux.test/a2">two</a></div>
+      </div>
+      <div id="other"><a href="https://lanzoux.test/b1">three</a></div>
+    "#;
+
+    #[test]
+    fn a_second_query_does_not_reissue_indices_the_first_one_handed_out() {
+        set_page(Some(TWO_LISTS.to_string()));
+        let out = eval_to_string(
+            r#"
+            var folder = java.getElements('#folder .mlink');
+            var other  = java.getElements('#other a');
+            java.setContent(other[0]);
+            result = java.getString('a@href');
+            "#,
+            &json!({}),
+        );
+        set_page(None);
+        assert_eq!(
+            out, "https://lanzoux.test/b1",
+            "`other[0]` must name the element the second query found, not the first query's first handle"
+        );
+    }
+
+    #[test]
+    fn a_write_does_not_renumber_the_handles_a_rule_is_holding() {
+        // `setContent` replaces the working document, so the page has to be put
+        // back before the second query — which is exactly what the real rule
+        // does when it calls `java.setContent(src)` after walking the folder.
+        set_page(Some(TWO_LISTS.to_string()));
+        let out = eval_to_string(
+            r#"
+            var src = `
+              <div id="folder">
+                <div class="mlink"><a href="https://lanzoux.test/a1">one</a></div>
+                <div class="mlink"><a href="https://lanzoux.test/a2">two</a></div>
+              </div>
+              <div id="other"><a href="https://lanzoux.test/b1">three</a></div>
+            `;
+            var folder = java.getElements('#folder .mlink');
+            for (var i = 0; i < 300; i++) { java.setContent(folder[1]); }
+            java.setContent(src);
+            var other = java.getElements('#other a');
+            java.setContent(other[0]);
+            result = java.getString('a@href');
+            "#,
+            &json!({}),
+        );
+        set_page(None);
+        assert_eq!(
+            out, "https://lanzoux.test/b1",
+            "writing to the page must not consume handle slots"
+        );
+    }
+
+    /// More matches than the table holds: the cap must refuse, not renumber.
+    #[test]
+    fn the_handle_table_refuses_past_its_cap_instead_of_resetting() {
+        let mut page = String::from("<div id='many'>");
+        for i in 0..(MAX_HANDLES + 10) {
+            page.push_str(&format!("<a href=\"/x{i}\">t{i}</a>"));
+        }
+        page.push_str("</div>");
+
+        set_page(Some(page));
+        // One evaluation: the find fills the table, and the handle it handed out
+        // last must still resolve to the 512th match.
+        let out = eval_to_string(
+            r#"
+            var all = java.getElements('#many a');
+            result = all.length + '|' + (function () {
+                java.setContent(all[511]);
+                return java.getString('a@href');
+            })();
+            "#,
+            &json!({}),
+        );
+        set_page(None);
+        assert_eq!(
+            out, "512|/x511",
+            "a full table must still resolve the handles it handed out, got {out}"
+        );
+    }
+
+    /// What the cap says when it has nothing left to give.
+    ///
+    /// This is the failure path, and it is asserted rather than assumed: a
+    /// second query on a page whose table is full hands back an empty list. It
+    /// does *not* hand back elements sharing indices with the handles the rule
+    /// is already holding, which is the outcome worth refusing.
+    #[test]
+    fn a_query_past_the_cap_yields_nothing_rather_than_wrong_elements() {
+        let mut page = String::from("<div id='many'>");
+        for i in 0..(MAX_HANDLES + 10) {
+            page.push_str(&format!("<a href=\"/x{i}\">t{i}</a>"));
+        }
+        page.push_str("</div><div id='other'><a href=\"/b1\">three</a></div>");
+
+        set_page(Some(page));
+        let out = eval_to_string(
+            r#"
+            var many = java.getElements('#many a');
+            var other = java.getElements('#other a');
+            java.setContent(many[0]);
+            result = java.getString('a@href') + '|' + other.length;
+            "#,
+            &json!({}),
+        );
+        set_page(None);
+        assert_eq!(
+            out, "/x0|0",
+            "the first query must still resolve, and the second must refuse: {out}"
+        );
+    }
+
+    /// The table is bounded by what it holds, not only by entry count: 512
+    /// slices of a nested document are not one document's worth of memory.
+    #[test]
+    fn the_handle_table_is_bounded_by_bytes_as_well_as_entries() {
+        // Two matches per repetition, each ~10 KB: 512 entries would be ~5 MB,
+        // above the byte budget, so the budget has to stop it before the count.
+        let text = "三".repeat(3_300); // ~9.9 KB
+        let mut page = String::from("<div id='many'>");
+        for _ in 0..(MAX_HANDLES / 2 + 20) {
+            page.push_str(&format!("<div class='w'><div class='w'>{text}</div></div>"));
+        }
+        page.push_str("</div>");
+
+        set_page(Some(page));
+        let count = eval_to_string("java.getElements('.w').length", &json!({}))
+            .parse::<usize>()
+            .unwrap();
+        let bytes = with_page(|p| p.handle_bytes);
+        set_page(None);
+
+        assert!(
+            bytes <= MAX_HANDLE_BYTES,
+            "{bytes} bytes of handles, budget is {MAX_HANDLE_BYTES}"
+        );
+        assert!(
+            count < MAX_HANDLES,
+            "the byte budget should have bitten before the entry cap, got {count} handles"
+        );
+        assert!(count > 0, "the budget should not refuse everything");
+    }
+
+    /// The handle's own accessors.
+    ///
+    /// These are the whole return value of `java.getElements`, and until this
+    /// was checked three of them answered `''` for every element: the old code
+    /// asked the selector for `tag` / `text` / `innerHtml` with no `@`, and a
+    /// bare token is a *tag selector* here, so it looked for an element called
+    /// `<text>` and found none. `.text()` is used 9 times in the collections
+    /// under `test-results/` (e.g. 影视 sources reading `list[j].text()`), so an
+    /// always-empty answer was a silent wrong value, not an unimplemented one.
+    #[test]
+    fn a_handle_reads_its_own_tag_text_and_markup() {
+        set_page(Some(TWO_LISTS.to_string()));
+        let out = eval_to_string(
+            r#"
+            var link = java.getElements('#other a')[0];
+            result = [link.tag(), link.text(), link.attr('href'), link.html()].join('|');
+            "#,
+            &json!({}),
+        );
+        set_page(None);
+        assert_eq!(out, "a|three|https://lanzoux.test/b1|three", "{out}");
+    }
+
+    /// `outerHtml()` is the element; `html()` is what is inside it.
+    #[test]
+    fn html_and_outer_html_are_not_the_same_reading() {
+        set_page(Some(TWO_LISTS.to_string()));
+        let out = eval_to_string(
+            r#"
+            var link = java.getElements('#other a')[0];
+            result = link.outerHtml() + '||' + link.html();
+            "#,
+            &json!({}),
+        );
+        set_page(None);
+        let (outer, inner) = out.split_once("||").expect("both readings");
+        assert_eq!(outer, r#"<a href="https://lanzoux.test/b1">three</a>"#, "{out}");
+        assert_eq!(inner, "three", "{out}");
+    }
+
+    /// The element overload is a replace, not an append.
+    #[test]
+    fn setting_content_on_an_element_replaces_what_is_inside_it() {
+        set_page(Some(TWO_LISTS.to_string()));
+        let out = eval_to_string(
+            r#"
+            var link = java.getElements('#other a')[0];
+            link.setContent('<b>改写</b>');
+            result = java.getString('b@text') + '|' + java.getString('a@text');
+            "#,
+            &json!({}),
+        );
+        set_page(None);
+        let (new_text, old_text) = out.split_once('|').expect("both reads should produce a value");
+        assert_eq!(new_text, "改写", "the new markup should be inside the element, got {out}");
+        assert_ne!(
+            old_text, "three",
+            "the element's previous content should be gone, not left beside the new markup: {out}"
+        );
+    }
+
+    /// `MAX_DOM_BYTES` says bytes, so it must count bytes.
+    #[test]
+    fn the_document_cap_counts_bytes_on_a_character_boundary() {
+        assert_eq!(clamp_dom("short"), "short");
+        // Three-byte characters: a character-based cap would admit 3x the memory.
+        let big = "三".repeat(MAX_DOM_BYTES);
+        let clamped = clamp_dom(&big);
+        assert!(
+            clamped.len() <= MAX_DOM_BYTES,
+            "clamped to {} bytes, cap is {MAX_DOM_BYTES}",
+            clamped.len()
+        );
+        assert!(clamped.len() > MAX_DOM_BYTES - 4, "the cap should be reached, not undershot");
+        assert!(clamped.chars().all(|c| c == '三'), "truncation split a character");
+
+        set_page(Some(big));
+        assert!(
+            with_page(|p| p.html.len()) <= MAX_DOM_BYTES,
+            "set_page must apply the same byte cap"
+        );
+        set_page(None);
     }
 
     #[test]

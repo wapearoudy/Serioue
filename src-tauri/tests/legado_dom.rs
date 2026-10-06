@@ -102,6 +102,142 @@ fn the_real_rule_produces_items() {
     );
 }
 
+/// What the handle has, and what it deliberately does not.
+///
+/// Asserted rather than left to prose: `select` is the one element method the
+/// wider collections use that is still missing (10 call sites, all in video
+/// sources such as `影视难受3`'s neighbours — none in the five-name family), and
+/// adding it is what the next person will wonder about. When it is implemented,
+/// this test fails and this comment is where the decision is recorded.
+#[test]
+fn the_handle_api_is_exactly_what_the_family_needs() {
+    js::set_page(Some(FOLDER_PAGE.to_string()));
+    let mut census = Vec::new();
+    for name in [
+        "tag", "text", "textNodes", "html", "outerHtml", "attr", "setContent", // present
+        "select", "size", // absent on purpose
+    ] {
+        // `result = …` rather than a bare expression: this engine's statement
+        // form returns `result`, so `typeof h.select;` alone would read as ''.
+        let kind = js::eval_to_string(
+            &format!("var h = java.getElements('#folder .mlink')[0]; result = typeof h.{name};"),
+            &json!({}),
+        );
+        println!("handle.{name:<12} -> {kind}");
+        census.push((name, kind));
+    }
+    js::set_page(None);
+
+    for (name, kind) in &census {
+        let expected = if matches!(*name, "select" | "size") {
+            "undefined"
+        } else {
+            "function"
+        };
+        assert_eq!(kind, expected, "handle.{name} should be {expected}");
+    }
+}
+
+/// The same fragment against the site itself, so the upstream limit is measured
+/// rather than assumed.
+///
+/// Ignored by default because it needs the network:
+///
+/// ```text
+/// cargo test --release --test legado_dom -- --ignored --nocapture
+/// ```
+///
+/// Measured on 2026-10-06 from this machine: `wwdn.lanzoue.com/b0d5g0tba`
+/// answers HTTP 200 with ~6.7 KB, and that page carries **no** `id="folder"` and
+/// **no** `class="mlink"` — it is the password form, whose file list is fetched
+/// by the page's own `$.ajax` POST to `/filemoreajax.php` (the markers
+/// `var pgs` and `filemoreajax` are present instead). So the branch these rules
+/// walk has nothing to match on today's page, which is why the source stays
+/// unusable even with the DOM host objects complete. That is an upstream
+/// finding, not an engine one, and this test is the tripwire: if lanzou serves
+/// the folder markup again, this assert fails and the news is good.
+#[test]
+#[ignore]
+fn the_live_folder_page_is_measured_rather_than_assumed() {
+    let url = std::env::var("SERIOUS_LANZOU_URL")
+        .unwrap_or_else(|_| "https://wwdn.lanzoue.com/b0d5g0tba".to_string());
+
+    let page = serious_lib::engine::fetch::fetch_ok(None, &url)
+        .unwrap_or_else(|e| panic!("{url} could not be fetched: {e}"));
+    println!("{url}\n  HTTP {} · {} bytes", page.status, page.body.len());
+    for marker in [
+        "id=\"folder\"",
+        "class=\"mlink\"",
+        "user-radio",
+        "filesize",
+        "filemoreajax",
+        "var pgs",
+    ] {
+        let n = page.body.matches(marker).count();
+        println!("  {marker:<18} x{n}");
+    }
+
+    js::set_page(Some(page.body.clone()));
+    let out = js::eval_to_string(REAL_RULE_FRAGMENT, &json!({}));
+    js::set_page(None);
+    println!("  rule output -> {}", out.trim());
+
+    let items: serde_json::Value =
+        serde_json::from_str(out.trim()).expect("the rule should emit JSON");
+    assert_eq!(
+        items.as_array().map(|a| a.len()),
+        Some(0),
+        "the live page now carries the folder markup these rules walk — the source may work again: {out}"
+    );
+}
+
+/// The real rules read this out of the page, and the answer must be a value.
+///
+/// The rule's other fields consume the map, so the pair is measured on the rule's
+/// own text rather than on a paraphrase: `ruleArticles` ends with
+/// `java.put('url', baseUrl)` and `ruleNextPage` opens with
+/// `url = String(java.get('url'))`. Before `java.get` read the map, the second
+/// reading came back as `<!-- fetch error: 网络请求失败: builder error -->` —
+/// an HTTP fetch of the literal key `url` — and pagination rendered as `''`.
+#[test]
+fn the_listing_stores_its_page_and_pagination_reads_it_back() {
+    js::set_page(Some(FOLDER_PAGE.to_string()));
+
+    // `ruleArticles`' last line, with the value the harness would supply: the
+    // engine does not bind `baseUrl` as a global — the whole-JS-block path that
+    // would is task t35. The `java.put` call itself is unmodified.
+    js::eval_to_string(
+        "var baseUrl = 'https://wwdn.lanzoue.com/b0d5g0tba?pg=1'; java.put('url', baseUrl);",
+        &json!({}),
+    );
+
+    // `ruleNextPage`, kept as written. `result = url;` is the one harness line:
+    // this engine's statement form returns `result`, so a rule finishing with a
+    // bare expression yields '' (measured separately).
+    let next = js::eval_to_string(
+        r#"
+        try {
+            url = String(java.get('url'));
+            url = url.replace(/(pg=)(\d+)/, (mat, $1, $2) => {
+                return $1 + (~~$2 + 1)
+            }).replace(url, '');
+        } catch (err) {
+            url = ""
+        }
+        result = url;
+        "#,
+        &json!({}),
+    );
+    js::set_page(None);
+
+    println!("next page -> {:?}", next.trim());
+    assert_eq!(
+        next.trim(),
+        "https://wwdn.lanzoue.com/b0d5g0tba?pg=2",
+        "pagination must advance the page the listing stored"
+    );
+}
+
 #[test]
 fn reports_which_extraction_shapes_the_engine_understands() {
     // Not an assertion of success: a census of which selectors in these rules
