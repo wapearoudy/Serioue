@@ -2,6 +2,29 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.1.7 — 去串味、宽表可滚、历史可翻
+
+自 v0.1.6 以来的变化（t70/t71/t72，评审 t73/t74/t75/t77 全部 pass，发版门禁四项全绿）。
+
+### 修复
+
+- **`##` 算子下放**（t70，评审 t73 needs_revision → t76 修复 → t77 pass）——
+  `field_json` 对含 `##` 规则先查 subject 再 `apply_regex_op`：
+  晋江标题去串味（`最幸福的一集`，link 保持 `https://app.jjwxc.org/648475`）。
+- **宽表横滚**（t71，评审 t74 pass）—— 阅读正文域 `overflow-x:auto`，
+  表格自滚动 + 边框/内边距/不换行/表头高亮/隔行；`.app/.main` 保持 `hidden`。
+- **历史分页搜索**（t72，评审 t75 pass）—— 300 硬上限打掉：
+  首屏 100 +「加载更多」递增 + 标题搜索（已加载内过滤）+ 计数；
+  303 位远古记录翻页可达；新腿 `test:history-more`。
+
+### 门禁
+
+- `cargo test --release` EXIT=0：lib 211 + `legado_dom` 9（1 ignored）+ `t44_bclass` 9（3 ignored），
+  其余按设计 ignored，0 failed。
+- `cargo clippy --release --all-targets -- -D warnings` EXIT=0 零告警。
+- `npx tsc --noEmit` EXIT=0；`pnpm check:updater` EXIT=0（endpoint 为 GitHub release feed）。
+- `theme-contrast` / `focus-visible` EXIT=0；`history-more` / `reader-nav` EXIT=0。
+
 ## 0.1.6 — B 类源三连修：7 个源恢复链接
 
 自 v0.1.5 以来的变化（B 类源引擎三连修 t63/t64/t65，评审 t66/t67/t68 全部 pass，发版门禁四项全绿）。

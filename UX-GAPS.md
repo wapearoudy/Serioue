@@ -136,3 +136,6 @@
 | — 列表模板链路（B 类 5 源，t44 交接 §5-1） | t63 | **已落盘并通过评审**（`aea02d7` 合批，t66 pass：`field_json` 对含 `{{` 规则调 `render_template`；bili×2/17k/推书君×2 翻绿） |
 | — 回退链（开眼，t44 交接 §5-2） | t64 | **已落盘并通过评审**（`aea02d7` 合批，t68 pass：`split_or_branches` 顶层切分+逐分支首个非空胜出；开眼 title 分支 2 命中） |
 | — 纯数字 ID 门控（虎牙，t44 交接 §5-3） | t65 | **已落盘并通过评审**（`aea02d7` 合批，t67 pass：纯数字放行+`resolve_link` 拼 host 根；`660000→https://www.huya.com/660000`；晋江 title 串味单列残留待 `##` 下放） |
+| — `##` 下放去串味（晋江，t65 残留） | t70 | **已落盘并通过评审**（t73 needs_revision → t76 修复 → t77 pass：`subject` 先查再 strip；标题 `最幸福的一集` 去串味） |
+| 12 宽表格裁切 | t71 | **已落盘并通过评审**（t74 pass：正文域 `overflow-x:auto` + 表格自滚动，`t71-after-widetable.png`） |
+| 14 历史 300 上限 | t72 | **已落盘并通过评审**（t75 pass：首屏 100 + 加载更多 + 标题搜索，新腿 `history-more`） |
