@@ -43,7 +43,9 @@
     "test:settings": "node scripts/reader-settings-test.mjs",
     "test:modal": "node scripts/reader-modal-test.mjs",
     "test:music-failfast": "node scripts/music-failfast-test.mjs",
-    "test:signature-accept": "node scripts/update-signature-accept-test.mjs"
+    "test:signature-accept": "node scripts/update-signature-accept-test.mjs",
+    "test:video-idle": "node scripts/video-idle-test.mjs",
+    "test:theme-contrast": "node scripts/theme-contrast-test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -231,6 +231,16 @@ export function VideoPlayer({
   const wrap = useRef<HTMLDivElement>(null);
   const hlsRef = useRef<HlsInstance | null>(null);
   const savedAt = useRef(0);
+  /**
+   * The control bar, and where the pointer last was.
+   *
+   * The idle countdown cannot run on events alone: a hand resting on the bar to
+   * fine-tune the playhead produces no event at all, so a timer that only
+   * restarts on activity fades the bar out from under the hand that is using
+   * it. Before hiding anything, the timer asks this pair where the pointer is.
+   */
+  const controls = useRef<HTMLDivElement>(null);
+  const pointerAt = useRef<{ x: number; y: number } | null>(null);
 
   const [err, setErr] = useState<string | null>(null);
   const [levels, setLevels] = useState<Quality[]>([]);
@@ -748,16 +758,22 @@ export function VideoPlayer({
   }, []);
 
   // Any pointer, touch or key activity brings the controls straight back.
+  // The pointer's position is kept as well as the wake, because "is the hand
+  // on the bar right now" is a question no event can answer later.
   useEffect(() => {
     const wake = () => setWake((n) => n + 1);
+    const track = (e: PointerEvent) => {
+      pointerAt.current = { x: e.clientX, y: e.clientY };
+      wake();
+    };
     const options: AddEventListenerOptions = { passive: true };
-    window.addEventListener("pointermove", wake, options);
-    window.addEventListener("pointerdown", wake, options);
+    window.addEventListener("pointermove", track, options);
+    window.addEventListener("pointerdown", track, options);
     window.addEventListener("touchstart", wake, options);
     window.addEventListener("keydown", wake);
     return () => {
-      window.removeEventListener("pointermove", wake);
-      window.removeEventListener("pointerdown", wake);
+      window.removeEventListener("pointermove", track);
+      window.removeEventListener("pointerdown", track);
       window.removeEventListener("touchstart", wake);
       window.removeEventListener("keydown", wake);
     };
@@ -780,7 +796,26 @@ export function VideoPlayer({
   useEffect(() => {
     setUiHidden(false);
     if (!canHide) return;
-    const timer = window.setTimeout(() => setUiHidden(true), UI_IDLE_MS);
+    const timer = window.setTimeout(() => {
+      /**
+       * A pointer parked on the bar is using the bar.
+       *
+       * Silent, still, and exactly the state the bar must survive — so the
+       * position is hit-tested here rather than waited on. Finding the pointer
+       * on the bar re-arms the countdown instead of hiding; the moment the
+       * pointer leaves, the next tick hides as usual, because from then on the
+       * hit test lands on the picture. Deliberately still a countdown: the bar
+       * is not pinned, it is simply not hidden out from under a hand.
+       */
+      const at = pointerAt.current;
+      const under = at ? document.elementFromPoint(at.x, at.y) : null;
+      const bar = controls.current;
+      if (bar && under && bar.contains(under)) {
+        setWake((n) => n + 1);
+        return;
+      }
+      setUiHidden(true);
+    }, UI_IDLE_MS);
     return () => window.clearTimeout(timer);
   }, [canHide, wake]);
 
@@ -835,11 +870,19 @@ export function VideoPlayer({
      *
      * Not a nicety: a viewer renaming a bookmark, or typing a number into a
      * search box, must not have the film jump or pause under them.
+     *
+     * A slider is the exception, and it is the one that matters most: nothing
+     * can be typed into it, and a drag leaves the focus on it, so excluding it
+     * handed the arrow keys to the range's own `step` — half a second a press,
+     * through `onChange`, while this handler returned early. Dragging the
+     * playhead would quietly turn ← and → into a 0.5 s nudge. They have to
+     * mean ten seconds everywhere in this player.
      */
     const isTypingTarget = (el: Element | null): boolean => {
       if (!el) return false;
       const tag = el.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (tag === "INPUT") return (el as HTMLInputElement).type !== "range";
       return (el as HTMLElement).isContentEditable === true;
     };
 
@@ -1173,6 +1216,7 @@ export function VideoPlayer({
       <div
         className="player-controls"
         data-controls="1"
+        ref={controls}
         data-hidden={uiHidden ? "1" : "0"}
         style={{
           opacity: uiHidden ? 0 : 1,
@@ -1212,8 +1256,16 @@ export function VideoPlayer({
           >
             {playing ? "⏸" : "▶"}
           </button>
-          <button onClick={() => seekBy(time - 10)} title="后退 10 秒 (←)">
+          <button data-seek-back="1" onClick={() => seekBy(time - 10)} title="后退 10 秒 (←)">
             ⟲
+          </button>
+          {/*
+            The mirror of the button above. The bar could rewind ten seconds but
+            not skip forward, while → on the keyboard could — the same action
+            was reachable only by people who happened not to be using the mouse.
+          */}
+          <button data-seek-forward="1" onClick={() => seekBy(time + 10)} title="快进 10 秒 (→)">
+            ⟳
           </button>
           <input
             className="player-seek"

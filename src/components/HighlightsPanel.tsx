@@ -297,8 +297,10 @@ export function HighlightsPanel({
                               rows={3}
                               style={{ width: "100%", fontSize: 13, resize: "vertical" }}
                             />
+                            {/* A failed save/clear is an error, not a hint:
+                                --err keeps it readable on every theme. */}
                             {editError && (
-                              <div data-note-error="1" style={{ color: "#f0a8a4", fontSize: 12 }}>
+                              <div data-note-error="1" style={{ color: "var(--err)", fontSize: 12 }}>
                                 {editError}
                               </div>
                             )}

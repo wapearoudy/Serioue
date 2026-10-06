@@ -10,7 +10,11 @@
   --accent-dim: #2f5fb3;
   --ok: #35c26a;
   --warn: #e0a338;
-  --err: #e0564f;
+  /* A touch lighter than the original #e0564f: on the dark hover surface
+     (--bg-hover) the error text of the music queue's 移除 button only reached
+     4.27:1, and on the banner's own 9% tint over --bg-elevated 4.26:1. Both are
+     measured by scripts/theme-contrast-test.mjs and now sit above 4.5:1. */
+  --err: #e4726b;
   --radius: 8px;
   --sidebar-w: 300px;
 
@@ -50,6 +54,13 @@ html[data-theme="light"] {
   --text: #1c1f24;
   --text-dim: #5c6370;
   --text-faint: #8b93a1;
+  /* The dark theme's --ok/--warn/--err are chosen for a near-black surface and
+     only reach 1.6:1–3.7:1 here, so every light theme states its own. Values
+     are checked by `node scripts/theme-contrast-test.mjs` against --bg,
+     --bg-elevated and --bg-hover (>= 4.5:1). */
+  --ok: #157347;
+  --warn: #7a5000;
+  --err: #a02a20;
   color-scheme: light;
 }
 
@@ -61,6 +72,9 @@ html[data-theme="sepia"] {
   --text: #4a3f2c;
   --text-dim: #7a6b52;
   --text-faint: #a1907a;
+  --ok: #10603a;
+  --warn: #6f4700;
+  --err: #9f2d24;
   color-scheme: light;
 }
 
@@ -72,6 +86,9 @@ html[data-theme="green"] {
   --text: #2f4530;
   --text-dim: #566f55;
   --text-faint: #82a080;
+  --ok: #14603a;
+  --warn: #6b4400;
+  --err: #9c2f26;
   color-scheme: light;
 }
 
@@ -626,7 +643,9 @@ select:focus {
 
 .shelf-read-unknown {
   color: var(--warn);
-  opacity: 0.8;
+  /* No opacity: de-emphasising an already marginal warning dropped it to
+     3.98:1 on --bg-hover and 4.07:1 on the sepia panel — below AA. The colour
+     alone already says "this is the uncertain one". */
 }
 
 .row-thumb {
@@ -1136,8 +1155,8 @@ select:focus {
 }
 
 .player-note.bad {
-  color: #f0a8a4;
-  border-color: rgba(224, 86, 79, 0.35);
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 35%, transparent);
 }
 
 .player-title {
@@ -1484,8 +1503,8 @@ select:focus {
   padding: 10px 13px;
   border-radius: var(--radius);
   border: 1px solid var(--err);
-  background: rgba(224, 86, 79, 0.09);
-  color: #f0a8a4;
+  background: color-mix(in srgb, var(--err) 9%, transparent);
+  color: var(--err);
   font-size: 13px;
   display: flex;
   gap: 10px;
@@ -1494,8 +1513,8 @@ select:focus {
 
 .banner.info {
   border-color: var(--accent-dim);
-  background: rgba(79, 140, 255, 0.09);
-  color: #a9c6ff;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent);
 }
 
 .repo-grid {
@@ -1721,17 +1740,17 @@ select:focus {
 
 .chip.ok {
   color: var(--ok);
-  border-color: rgba(53, 194, 106, 0.35);
+  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
 }
 
 .chip.warn {
   color: var(--warn);
-  border-color: rgba(224, 163, 56, 0.35);
+  border-color: color-mix(in srgb, var(--warn) 35%, transparent);
 }
 
 .chip.fail {
   color: var(--err);
-  border-color: rgba(224, 86, 79, 0.35);
+  border-color: color-mix(in srgb, var(--err) 35%, transparent);
 }
 
 .verify-detail {
@@ -1931,7 +1950,7 @@ select:focus {
 
 .music-error {
   font-size: 12px;
-  color: #f0a8a4;
+  color: var(--err);
 }
 
 /* Lyrics: a scrolling column under the controls, the current line highlighted.
@@ -2052,6 +2071,6 @@ select:focus {
 }
 
 .music-queue li .remove:hover {
-  color: #f0a8a4;
-  border-color: rgba(224, 86, 79, 0.35);
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 35%, transparent);
 }

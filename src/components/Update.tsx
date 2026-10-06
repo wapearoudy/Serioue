@@ -81,7 +81,10 @@ export function UpdateBanner({ initial, onDismiss }: Props) {
           </div>
         )}
 
-        {error && <div style={{ color: "#f0a8a4", marginBottom: 8 }}>{error}</div>}
+        {/* A failed install is an error, so it uses the theme's --err. The
+            pale pink literal it used to carry was chosen for the dark surface
+            and nearly vanished on the three light themes. */}
+        {error && <div style={{ color: "var(--err)", marginBottom: 8 }}>{error}</div>}
 
         {busy && (
           <div style={{ maxWidth: 320, marginBottom: 8 }}>
@@ -176,7 +179,7 @@ export function UpdateSettings() {
           style={{
             marginTop: 8,
             fontSize: 13,
-            color: isProblem ? "#f0a8a4" : "var(--text-dim)",
+            color: isProblem ? "var(--err)" : "var(--text-dim)",
           }}
         >
           {problem}
