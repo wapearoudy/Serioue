@@ -43,9 +43,9 @@ mod repro {
         let (items, _) = parse_list(&s, body, "https://www.huya.com/cache.php?m=LiveList&page=1");
         assert_eq!(items.len(), 1);
         println!("huya item: title={:?} link={:?}", items[0].title, items[0].link);
-        // TODAY: link == "" (looks_like_link rejects a bare "660000").
-        // FIX should yield https://www.huya.com/660000 (Huya room URL pattern).
-        assert!(items[0].link.is_empty(), "today the numeric id is dropped");
+        // FIXED (t65): the bare room id resolves to the host root —
+        // https://www.huya.com/660000 (Huya room URL pattern).
+        assert_eq!(items[0].link, "https://www.huya.com/660000");
     }
 
     #[test]
@@ -56,9 +56,11 @@ mod repro {
         let (items, _) = parse_list(&s, body, "https://api.bilibili.com/x/web-interface/ranking");
         assert_eq!(items.len(), 1);
         println!("bili item: title={:?} link={:?}", items[0].title, items[0].link);
-        // TODAY: link == "" (field_json never renders {{}} templates).
-        // FIX should yield https://player.bilibili.com/player.html?aid=114245006003082.
-        assert!(items[0].link.is_empty(), "today the template is not substituted");
+        // FIXED (t63): field_json renders {{}} templates against the container.
+        assert_eq!(
+            items[0].link,
+            "https://player.bilibili.com/player.html?aid=114245006003082"
+        );
     }
 
     #[test]
@@ -71,10 +73,12 @@ mod repro {
         let body = r#"{"data":[{"id":126624576,"groupId":2519733,"groupName":"找书圈","title":"反骨逆仙"}]}"#;
         let (items, _) = parse_list(&s, body, "http://api.17k.com/sns/group/thread?page=1");
         println!("17k items: {items:?}");
-        // Live probe: title resolved to "反骨逆仙" (groupName template dropped),
-        // link == "". FIX should yield title 【找书圈】反骨逆仙 and link
-        // http://api.17k.com/sns/thread/126624576?groupId=2519733.
-        assert!(items.iter().all(|i| i.link.is_empty()), "today no 17k link resolves");
+        // FIXED (t63): title renders both holes, link renders both holes.
+        assert_eq!(items[0].title, "【找书圈】反骨逆仙");
+        assert_eq!(
+            items[0].link,
+            "http://api.17k.com/sns/thread/126624576?groupId=2519733"
+        );
     }
 
     #[test]
@@ -88,8 +92,11 @@ mod repro {
         let (items, _) = parse_list(&s, body, "https://pre-api.tuishujun.com/api/listBooklist");
         assert_eq!(items.len(), 1);
         println!("tsj-single item: title={:?} link={:?}", items[0].title, items[0].link);
-        // FIX should yield .../listBookInBooklist?booklist_id=654154&page=1&pageSize=8.
-        assert!(items[0].link.is_empty(), "today the template is not substituted");
+        // FIXED (t63): both holes render against the container.
+        assert_eq!(
+            items[0].link,
+            "https://pre-api.tuishujun.com/api/listBookInBooklist?booklist_id=654154&page=1&pageSize=8"
+        );
     }
 
     #[test]
@@ -99,8 +106,10 @@ mod repro {
         let (items, _) = parse_list(&s, body, "https://pre-api.tuishujun.com/api/listBookRank");
         assert_eq!(items.len(), 1);
         println!("tsj-rank item: title={:?} link={:?}", items[0].title, items[0].link);
-        // FIX should yield https://baidu.com/s?wd=夜无疆 (a search link, openable).
-        assert!(items[0].link.is_empty(), "today the template is not substituted");
+        // Rendered honestly, then gated honestly: the Chinese search URL has
+        // no whitespace and passes looks_like_link, so it stays openable
+        // (t63 does NOT widen the gate — this one passes it as written).
+        assert_eq!(items[0].link, "https://baidu.com/s?wd=夜无疆");
     }
 
     #[test]
@@ -113,10 +122,11 @@ mod repro {
         let link = eval_json(&card, "$.data.text||$.data.content.data.webUrl.raw||$.data.web.raw");
         let title = eval_json(&card, "$.data.text||$.data.content.data.title||$.data.title");
         println!("followCard link-branches -> {link:?}, title-branches -> {title:?}");
-        // TODAY: both [] — first branch misses and no fallback is attempted,
-        // even though branch 2 of the title rule would hit.
-        assert!(link.is_empty());
-        assert!(title.is_empty(), "branch 2 has the title but is never tried");
+        // FIXED (t64): top-level || branches are tried in order; branch 2 of
+        // the title rule hits content.data.title. No webUrl exists anywhere,
+        // so the link rule stays empty — honestly, not widened.
+        assert!(link.is_empty(), "no webUrl in this card: {link:?}");
+        assert_eq!(title, vec!["追寻意义".to_string()], "branch 2 should win: {title:?}");
     }
 
     #[test]
@@ -145,8 +155,19 @@ mod repro {
         let body = r#"{"data":{"data":[{"listid":"648475","subject":"最幸福的一集"}]}}"#;
         let (items, _) = parse_list(&s, body, "https://app.jjwxc.org/");
         println!("jinjiang title-hash items: {items:?}");
-        // TODAY title == "" (the ## strip operator is content-template-only).
-        assert!(items.iter().all(|i| i.title.is_empty()));
+        assert_eq!(items.len(), 1);
+        // PROGRESS (t65 side effect, honest intermediate): the link now
+        // resolves — the bare id "648475" reaches the host root.
+        assert_eq!(items[0].link, "https://app.jjwxc.org/648475");
+        // KNOWN TAINT (not t65's to fix): title == link because field_json
+        // gets "" for `$.subject##…` (the ## strip operator never made it down
+        // to the list-field path) and parse_list_inner:516 falls back to the
+        // link when the title is empty. The correct title is 最幸福的一集;
+        // it un-taints once ## is lowered to the field path.
+        assert_eq!(
+            items[0].title, "https://app.jjwxc.org/648475",
+            "title currently tainted by the link fallback (want 最幸福的一集)"
+        );
     }
 
     #[test]

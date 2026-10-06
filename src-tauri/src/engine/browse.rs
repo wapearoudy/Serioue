@@ -268,6 +268,14 @@ fn link_path(link: &str) -> String {
 /// A rule such as `text.一键导入@onclick` yields a JavaScript call like
 /// `importApp(1)`. Turning that into a link produces an item the reader can
 /// never open, and the report then blames the site instead of the rule.
+///
+/// A bare numeric room id (Huya's `$.profileRoom` → `"660000"`) is the one
+/// deliberate exception: it is not a URL, but it is the site's own address
+/// for the room — `https://www.huya.com/660000` — and dropping it leaves the
+/// whole listing unopenable. The id is resolved against the page's host at
+/// the link site, never invented from the rule, so `looks_like_link` keeps
+/// rejecting everything else that merely "looks numeric" in the wrong shape
+/// (whitespace, calls, markup, `javascript:`/`data:` are all still refused).
 fn looks_like_link(value: &str) -> bool {
     let v = value.trim();
     if v.is_empty() || v.len() > 2000 {
@@ -281,6 +289,16 @@ fn looks_like_link(value: &str) -> bool {
     if lower.starts_with("javascript:") || lower.starts_with("data:") {
         return false;
     }
+    // A bare room id: digits only (an optional leading `#` is tolerated, it
+    // is stripped at the link site). Huya serves rooms at /{id}; resolving
+    // happens in `resolve_link`, not here — this function only admits the
+    // shape, it never builds the address.
+    {
+        let digits = v.strip_prefix('#').unwrap_or(v);
+        if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+            return true;
+        }
+    }
     v.starts_with("http://")
         || v.starts_with("https://")
         || v.starts_with("//")
@@ -288,6 +306,33 @@ fn looks_like_link(value: &str) -> bool {
         || v.starts_with("./")
         || v.starts_with("../")
         || v.contains('.')
+}
+
+/// Turn an extracted link value into the address the reader opens.
+///
+/// Ordinary values resolve against the page URL. A bare numeric room id has
+/// no path to resolve, so it is appended to the page's host root instead:
+/// `"660000"` on `https://www.huya.com/cache.php?m=LiveList` becomes
+/// `https://www.huya.com/660000`. Anything that is neither a plausible link
+/// nor a bare id yields no address rather than a fabricated one.
+fn resolve_link(raw: &str, base_url: &str) -> String {
+    let v = raw.trim();
+    if !looks_like_link(v) {
+        return String::new();
+    }
+    let id = v.strip_prefix('#').unwrap_or(v);
+    if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) {
+        // Keep only scheme + host: the listing endpoint's path (…/cache.php…)
+        // is not part of a room address.
+        if let Ok(u) = url::Url::parse(base_url) {
+            if let Some(host_str) = u.host_str() {
+                let port = u.port().map(|p| format!(":{p}")).unwrap_or_default();
+                return format!("{}://{}{}/{}", u.scheme(), host_str, port, id);
+            }
+        }
+        return absolute_url(&format!("/{id}"), base_url);
+    }
+    absolute_url(v, base_url)
 }
 
 /// Classify an item so the UI can offer the right affordance.
@@ -464,11 +509,7 @@ fn parse_list_inner(
         if title.is_empty() && link.is_empty() && image.is_empty() {
             continue;
         }
-        let link = if looks_like_link(&link) {
-            absolute_url(&link, base_url)
-        } else {
-            String::new()
-        };
+        let link = resolve_link(&link, base_url);
         let image = absolute_url(&image, base_url);
 
         items.push(ArticleItem {
@@ -657,6 +698,19 @@ fn field_json(rule: &str, value: &Value, field_name: &str) -> String {
         let out = selector::eval_json(value, rule);
         if let Some(v) = out.into_iter().find(|s| !s.trim().is_empty()) {
             return v;
+        }
+        // Legado list-field templates: `...{{$.aid}}...`. The whole string is
+        // not a JSONPath, so the lookup above parses nothing and yields
+        // nothing — but the per-hole expressions inside `{{ }}` are. Render
+        // the template against this container (t44-1: bili/17k/tuishujun
+        // links were silently blank without this). `looks_like_link` at the
+        // call site still decides openability: a rendered Chinese search URL
+        // with spaces stays unopenable and is reported honestly, not widened.
+        if rule.contains("{{") {
+            let rendered = template::render_template(rule, value);
+            if !rendered.trim().is_empty() && rendered != rule {
+                return rendered;
+            }
         }
     }
 
@@ -1410,6 +1464,28 @@ mod tests {
         assert!(looks_like_link("/a/b.html"));
         assert!(looks_like_link("https://x.com/a"));
         assert!(looks_like_link("//cdn.x.com/a.mp3"));
+    }
+
+    #[test]
+    fn a_bare_numeric_room_id_resolves_to_the_host_root() {
+        // Huya's `$.profileRoom` yields "660000": not a URL, but the site's
+        // own address for the room. The gate admits the shape; the resolver
+        // builds `https://www.huya.com/660000`, never the endpoint path.
+        assert!(looks_like_link("660000"));
+        assert_eq!(
+            resolve_link("660000", "https://www.huya.com/cache.php?m=LiveList&page=1"),
+            "https://www.huya.com/660000"
+        );
+        // Near-misses stay refused: not digits-only, or digits with junk.
+        assert!(!looks_like_link("660000 rooms"));
+        assert_eq!(resolve_link("660000 rooms", "https://www.huya.com/"), String::new());
+        assert!(!looks_like_link("12ab34"));
+        assert_eq!(resolve_link("importApp(660000)", "https://www.huya.com/"), String::new());
+        // Ordinary links still resolve against the page URL untouched.
+        assert_eq!(
+            resolve_link("/a/b.html", "https://x.com/c/d"),
+            "https://x.com/a/b.html"
+        );
     }
 
     #[test]

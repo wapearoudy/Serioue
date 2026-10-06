@@ -858,12 +858,70 @@ pub fn lookup_verdict(root: &Value, rule: &str) -> Lookup {
     Lookup::Values
 }
 
-/// Evaluate a rule against a JSON body.
-pub fn eval_json(root: &Value, rule: &str) -> Vec<String> {
-    let rule = rule.trim();
-    if rule.is_empty() {
-        return vec![json_to_string(root)];
+/// Split a rule on top-level `||` fallback separators.
+///
+/// Only separators *outside* `{{ }}` templates and outside single/double
+/// quotes count: `{{$.a || 'x'}}` is one template expression, not two
+/// branches, and `'a||b'` inside quotes is a literal. Returns `None` when
+/// there is no top-level separator, so the common single-branch path pays no
+/// extra work. JS rules never reach here (`field_json` routes them to the
+/// script engine first), but the guard is cheap: a rule that looks like JS is
+/// left whole rather than split mid-expression.
+fn split_or_branches(rule: &str) -> Option<Vec<&str>> {
+    if !rule.contains("||") {
+        return None;
     }
+    let bytes = rule.as_bytes();
+    let mut out: Vec<&str> = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut depth = 0usize; // nesting inside {{ }}
+    let mut quote: Option<u8> = None; // inside '...' or "..."
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'\'' || b == b'"' {
+            quote = Some(b);
+            i += 1;
+            continue;
+        }
+        if b == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+            depth += 1;
+            i += 2;
+            continue;
+        }
+        if b == b'}' && i + 1 < bytes.len() && bytes[i + 1] == b'}' && depth > 0 {
+            depth -= 1;
+            i += 2;
+            continue;
+        }
+        if b == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'|' && depth == 0 {
+            out.push(rule[start..i].trim());
+            i += 2;
+            start = i;
+            continue;
+        }
+        i += 1;
+    }
+    if out.is_empty() {
+        return None;
+    }
+    out.push(rule[start..].trim());
+    Some(out)
+}
+
+/// Evaluate one branch (no top-level `||` left) — the old body of `eval_json`.
+fn eval_single_json(root: &Value, rule: &str) -> Vec<String> {
     let compiled = CompiledRule::compile(rule);
     if compiled.is_empty() {
         return vec![json_to_string(root)];
@@ -894,6 +952,32 @@ pub fn eval_json(root: &Value, rule: &str) -> Vec<String> {
         }
     }
     current.into_iter().map(|v| json_to_string(&v)).collect()
+}
+
+/// Evaluate a rule against a JSON body.
+///
+/// A rule may name fallback branches with top-level `||` (开眼视频
+/// `$.data.text||$.data.content.data.title||$.data.title`): branches are tried
+/// in order and the first one yielding a non-empty value wins. An empty result
+/// from every branch is still empty — fallback never invents content.
+pub fn eval_json(root: &Value, rule: &str) -> Vec<String> {
+    let rule = rule.trim();
+    if rule.is_empty() {
+        return vec![json_to_string(root)];
+    }
+    if let Some(branches) = split_or_branches(rule) {
+        for branch in branches {
+            if branch.is_empty() {
+                continue;
+            }
+            let out = eval_single_json(root, branch);
+            if out.iter().any(|s| !s.trim().is_empty()) {
+                return out;
+            }
+        }
+        return Vec::new();
+    }
+    eval_single_json(root, rule)
 }
 
 fn field(v: &Value, name: &str) -> String {
@@ -1088,6 +1172,20 @@ mod tests {
     fn a_text_match_that_matches_nothing_returns_nothing() {
         let doc = Doc::parse(r#"<div><span>别的</span></div>"#);
         assert!(doc.eval("span@text.没有这个").is_empty());
+    }
+
+    #[test]
+    fn or_branches_fall_back_to_the_first_non_empty() {
+        // 开眼视频 followCard: branch 1 misses, branch 2 hits.
+        let card = json!({"data": {"content": {"data": {"title": "追寻意义"}}}});
+        assert_eq!(
+            eval_json(&card, "$.data.text||$.data.content.data.title||$.data.title"),
+            vec!["追寻意义".to_string()]
+        );
+        // Every branch misses: still empty, never invented.
+        assert!(eval_json(&card, "$.data.nope||$.data.also_nope").is_empty());
+        // A separator inside {{ }} or quotes is not a branch boundary.
+        assert_eq!(eval_json(&card, "{{$.data.nope || 'x'}}||$.data.content.data.title"), vec!["追寻意义".to_string()]);
     }
 
     #[test]
