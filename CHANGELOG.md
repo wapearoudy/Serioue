@@ -2,6 +2,30 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.1.8 — 标题栏、源列表、状态栏精致化
+
+自 v0.1.7 以来的变化（t78，评审 t79 pass，发版门禁全绿）。
+
+### 焕新
+
+- **应用内标题栏**（t78，评审 t79 pass）—— 新组件 `Titlebar.tsx`：
+  品牌 + 面包屑 + 中部拖区（`data-tauri-drag-region`，decorations 未动、无假窗口按钮）；
+  8 视图 crumb（列表/阅读/历史/书架/统计/划线/校验/设置）+ 外跳按钮 aria-label；
+  原 `main-head` 降为副标题区（`main-head--sub`）。
+- **源列表**（t78）—— 7 导航改 4 列图标网格：44px + KindIcon SVG + 计数 + aria-current，
+  两排无竖叠，键盘 rows 保留；源行 60px 双行 + star 44px + 分组“xx·N 个源”+ selected rail。
+- **真状态栏**（t78）—— `sidebar-foot` 改 `role=status`：
+  校验中显示进度 aria-live，空源 disabled 安全；可用率三态 pill 可点进校验；
+  favFailed / continueFailed 行内提示原样保留。
+
+### 门禁
+
+- `cargo test --release` EXIT=0：lib 211 + `legado_dom` 9（1 ignored）+ `t44_bclass` 9（3 ignored），
+  其余按设计 ignored，0 failed。
+- `cargo clippy --release --all-targets -- -D warnings` EXIT=0 零告警。
+- `npx tsc --noEmit` EXIT=0；`pnpm check:updater` EXIT=0（endpoint 为 GitHub release feed）。
+- `theme-contrast` / `focus-visible` EXIT=0；`reader-nav` / `reader-return` EXIT=0。
+
 ## 0.1.7 — 去串味、宽表可滚、历史可翻
 
 自 v0.1.6 以来的变化（t70/t71/t72，评审 t73/t74/t75/t77 全部 pass，发版门禁四项全绿）。
