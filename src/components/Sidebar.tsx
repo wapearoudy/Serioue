@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage, type ContinueEntry, type SourceSummary } from "../api";
-import { compactNumber, timeAgo } from "./ui";
+import { KindIcon, compactNumber, timeAgo } from "./ui";
 import { useKeyboardRows } from "./keyboardRow";
 
 type Props = {
@@ -130,61 +130,79 @@ export function Sidebar(props: Props) {
         </div>
         <input
           placeholder="搜索源名称或地址…"
+          aria-label="搜索源"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <div style={{ display: "flex", gap: 6 }}>
+        <div className="sidebar-actions">
           <button
             className="primary"
-            style={{ flex: 1 }}
             onClick={props.onOpenRepo}
             disabled={props.busy}
           >
             导入合集
           </button>
           <button
+            className={props.filterOnlyFavorites ? "on" : ""}
+            data-sidebar-filter="favorites"
             onClick={() => props.onToggleFilter(!props.filterOnlyFavorites)}
             title="只看收藏"
-            style={{ opacity: props.filterOnlyFavorites ? 1 : 0.6 }}
+            aria-pressed={props.filterOnlyFavorites}
           >
-            ★
+            {props.filterOnlyFavorites ? "★ 只看收藏" : "☆ 只看收藏"}
           </button>
         </div>
       </div>
 
-      <div className="tabs">
-        <button className="tab active">源</button>
+      {/*
+        Seven destinations in 300px: a single flex row wraps them into
+        single-character columns. The grid below flows them into icon+label
+        tiles that never wrap mid-tile (no more 竖叠), with the source list
+        itself as the active tile. Keyboard rows and aria-current are kept —
+        only the layout changes, not the navigation contract.
+      */}
+      <nav className="tabs" aria-label="主要导航">
+        <button className="tab active" aria-current="page">
+          <KindIcon kind="novel" />
+          <span>源</span>
+        </button>
         <button className="tab" onClick={props.onOpenVerify}>
-          校验
+          <KindIcon kind="verify" />
+          <span>校验</span>
         </button>
         <button className="tab" onClick={props.onOpenHistory}>
-          历史
+          <KindIcon kind="history" />
+          <span>历史</span>
         </button>
         <button
           className="tab"
           onClick={props.onOpenShelf}
           title="把常读的分类收进书架，随时回去接着读"
         >
-          书架{(props.shelfCount ?? 0) > 0 ? ` ${props.shelfCount}` : ""}
+          <KindIcon kind="shelf" />
+          <span>书架{(props.shelfCount ?? 0) > 0 ? ` ${props.shelfCount}` : ""}</span>
         </button>
         <button
           className="tab"
           onClick={props.onOpenStats}
           title="今天、本周读了多少"
         >
-          统计
+          <KindIcon kind="stats" />
+          <span>统计</span>
         </button>
         <button
           className="tab"
           onClick={props.onOpenHighlights}
           title="所有划线与笔记"
         >
-          划线{(props.highlightCount ?? 0) > 0 ? ` ${props.highlightCount}` : ""}
+          <KindIcon kind="marks" />
+          <span>划线{(props.highlightCount ?? 0) > 0 ? ` ${props.highlightCount}` : ""}</span>
         </button>
         <button className="tab" onClick={props.onOpenSettings}>
-          设置
+          <KindIcon kind="settings" />
+          <span>设置</span>
         </button>
-      </div>
+      </nav>
 
       <div className="sidebar-body">
         {favFailed && (
@@ -265,7 +283,11 @@ export function Sidebar(props: Props) {
         ) : (
           grouped.map(([group, list]) => (
             <div key={group}>
-              {grouped.length > 1 && <div className="src-group">{group}</div>}
+              {grouped.length > 1 && (
+                <div className="src-group">
+                  {group} · {list.length} 个源
+                </div>
+              )}
               {list.map((s) => (
                 <div
                   key={s.id}
@@ -285,14 +307,22 @@ export function Sidebar(props: Props) {
                     className={`dot ${
                       s.health ? (s.health.ok ? "ok" : "bad") : "unknown"
                     }`}
+                    aria-hidden="true"
                   />
-                  <span className="src-name">{s.name || s.url}</span>
+                  <span className="src-main">
+                    <span className="src-name">{s.name || s.url}</span>
+                    {s.health && (
+                      <span className="src-sub">{timeAgo(s.health.checked_at)}</span>
+                    )}
+                  </span>
                   <button
                     className={`star${s.favorite ? " on" : ""}`}
                     onClick={(e) => toggleFavorite(s, e)}
                     title={s.favorite ? "取消收藏" : "收藏"}
+                    aria-label={s.favorite ? `取消收藏 ${s.name || s.url}` : `收藏 ${s.name || s.url}`}
+                    aria-pressed={s.favorite}
                   >
-                    ★
+                    <span aria-hidden="true">{s.favorite ? "★" : "☆"}</span>
                   </button>
                 </div>
               ))}
@@ -301,25 +331,32 @@ export function Sidebar(props: Props) {
         )}
       </div>
 
-      <div className="sidebar-foot">
-        <button onClick={props.onOpenVerify} disabled={props.sources.length === 0}>
-          校验全部
+      <div className="sidebar-foot" role="status" aria-label="源状态">
+        <button
+          onClick={props.onOpenVerify}
+          disabled={props.sources.length === 0}
+          data-sidebar-action="verify-all"
+        >
+          {props.busy ? "校验中…" : "校验全部"}
         </button>
         <span className="spacer" />
         {props.stats && props.stats.checked > 0 && (
-          // This was a `<span>` with `cursor: pointer` and nothing else: not
-          // focusable, no role, no way to reach it from the keyboard. It now
-          // behaves like the button it looks like.
-          <span
+          // Icon + text + colour: the ratio never speaks through colour alone.
+          // The pill stays a keyboard row (not a bare span) so it can be
+          // opened from the keyboard, as before.
+          <button
+            className={`avail-pill avail-${props.stats.working === props.stats.checked ? "ok" : props.stats.working === 0 ? "bad" : "warn"}`}
             {...rows.propsFor("foot:available", () => props.onOpenVerify(), {
               label: `已检测源中 ${props.stats?.working} / ${props.stats?.checked} 可用，打开校验详情`,
             })}
-            style={{ cursor: "pointer", ...rows.ring }}
             title="已检测源中可用的数量"
             data-sidebar-action="available"
           >
-            {props.stats.working}/{props.stats.checked} 可用
-          </span>
+            <span className="avail-dot" aria-hidden="true" />
+            <span aria-live="polite">
+              {props.stats.working}/{props.stats.checked} 可用
+            </span>
+          </button>
         )}
       </div>
     </aside>

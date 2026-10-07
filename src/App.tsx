@@ -9,6 +9,7 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { ShelfPanel } from "./components/ShelfPanel";
 import { HighlightsPanel } from "./components/HighlightsPanel";
 import { Sidebar, sourceMeta } from "./components/Sidebar";
+import { Titlebar } from "./components/Titlebar";
 import { UpdateBanner } from "./components/Update";
 import { VerifyPanel } from "./components/VerifyPanel";
 import { Banner, Empty } from "./components/ui";
@@ -482,6 +483,35 @@ export default function App() {
       />
 
       <main className="main">
+        <Titlebar
+          crumb={
+            view.kind === "list"
+              ? selected
+                ? selected.name
+                : "Serious"
+              : view.kind === "reader"
+                ? selected?.name ?? "Serious"
+                : view.kind === "history"
+                  ? "阅读历史"
+                  : view.kind === "shelf"
+                    ? "书架"
+                    : view.kind === "stats"
+                      ? "阅读统计"
+                      : view.kind === "highlights"
+                        ? "划线与笔记"
+                        : view.kind === "verify"
+                          ? "源校验"
+                          : "设置"
+          }
+          sub={
+            view.kind === "list" && selected
+              ? sourceMeta(selected)
+              : view.kind === "list"
+                ? "从左侧选择一个源开始"
+                : undefined
+          }
+          homeUrl={view.kind === "list" ? selected?.url : undefined}
+        />
         {error && (
           <Banner
             text={error.text}
@@ -502,7 +532,7 @@ export default function App() {
 
         {view.kind === "list" && selected && (
           <>
-            <div className="main-head">
+            <div className="main-head main-head--sub">
               <div className="main-title">
                 {selected.name}
                 <span>{sourceMeta(selected)}</span>
@@ -532,7 +562,7 @@ export default function App() {
         )}
 
         {view.kind === "list" && !selected && !bootBusy && (
-          <div className="main-head">
+          <div className="main-head main-head--sub">
             <div className="main-title">Serious</div>
           </div>
         )}
